@@ -1,190 +1,155 @@
-"""Flask web interface for streaming YouTube videos."""
+"""Flask web interface for preparing and playing cached YouTube videos."""
 
-from flask import Flask, Response, render_template_string, request, url_for
-import requests
+import hashlib
+import threading
 
-from player import NetworkError, PlayerError, get_info, get_stream_url, parse_range_header
+from flask import Flask, jsonify, render_template, request, send_file, url_for
+
+from player import (
+    PlayerError,
+    QUALITIES,
+    cache_path,
+    clean_cache,
+    download_video,
+    ffmpeg_path,
+    normalize_quality,
+    validate_url,
+)
 
 
 app = Flask(__name__)
 
-HOME_TEMPLATE = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>YouTube Viewer</title>
-  <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; background: #eef1e8; color: #1d2a24; }
-    body { margin: 0; min-height: 100vh; background: repeating-linear-gradient(135deg, transparent 0 28px, #dfe5d9 29px 30px); }
-    main { box-sizing: border-box; width: min(100% - 40px, 960px); margin: 8vh auto; padding: 32px 0; border-top: 5px solid #dc4e37; }
-    h1 { margin: 0 0 28px; font: 700 clamp(2rem, 8vw, 4.5rem)/1 Georgia, serif; }
-    form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
-    label { flex-basis: 100%; font-size: .85rem; font-weight: 700; }
-    input, select, button { box-sizing: border-box; min-height: 44px; border: 1px solid #87948a; border-radius: 3px; padding: 10px 12px; font: inherit; }
-    input { flex: 1 1 280px; min-width: 0; background: #fff; }
-    button { background: #1d2a24; color: #fff; cursor: pointer; }
-    [role="alert"] { color: #a52b1c; }
-    @media (max-width: 480px) { main { width: min(100% - 28px, 960px); margin-top: 28px; } form > button { flex: 1; } }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>YouTube Viewer</h1>
-    {% if error %}<p role="alert">{{ error }}</p>{% endif %}
-    <form action="{{ url_for('watch') }}" method="post">
-      <label for="video-url">YouTube URL</label>
-      <input id="video-url" name="url" type="url" required value="{{ url }}" placeholder="https://www.youtube.com/watch?v=...">
-      <button type="submit">Watch</button>
-    </form>
-  </main>
-</body>
-</html>
-"""
+_jobs = {}
+_jobs_lock = threading.Lock()
+clean_cache()
+FFMPEG_AVAILABLE = bool(ffmpeg_path())
+FFMPEG_WARNING = None if FFMPEG_AVAILABLE else (
+    "ffmpeg is not installed. Install ffmpeg and restart the viewer to merge video and audio."
+)
+if FFMPEG_WARNING:
+  app.logger.error(FFMPEG_WARNING)
 
-WATCH_TEMPLATE = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }} | YouTube Viewer</title>
-  <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; background: #eef1e8; color: #1d2a24; }
-    body { margin: 0; min-height: 100vh; background: repeating-linear-gradient(135deg, transparent 0 28px, #dfe5d9 29px 30px); }
-    main { box-sizing: border-box; width: min(100% - 40px, 960px); margin: 5vh auto; padding: 24px 0; border-top: 5px solid #dc4e37; }
-    h1 { margin: 18px 0 24px; font: 700 clamp(1.8rem, 6vw, 3.5rem)/1.05 Georgia, serif; overflow-wrap: anywhere; }
-    a { color: #a52b1c; }
-    form { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 18px; }
-    label { font-size: .85rem; font-weight: 700; }
-    select { min-height: 42px; border: 1px solid #87948a; border-radius: 3px; padding: 8px 32px 8px 10px; font: inherit; background: #fff; }
-    video { display: block; width: 100%; max-width: 960px; aspect-ratio: 16 / 9; background: #101512; object-fit: contain; }
-    [role="alert"] { color: #a52b1c; }
-    @media (max-width: 480px) { main { width: min(100% - 28px, 960px); margin-top: 20px; } }
-  </style>
-</head>
-<body>
-  <main>
-    <p><a href="{{ url_for('index') }}">New video</a></p>
-    <h1>{{ title }}</h1>
-    {% if error %}<p role="alert">{{ error }}</p>{% endif %}
-    {% if video_url %}
-      <form action="{{ url_for('watch') }}" method="post">
-        <input type="hidden" name="url" value="{{ video_url }}">
-        <label for="quality">Quality</label>
-        <select id="quality" name="quality" onchange="this.form.requestSubmit()">
-          {% for item in formats %}
-            <option value="{{ item.format_id }}" {% if item.format_id == quality %}selected{% endif %}>
-              {{ item.height or item.format_note or 'MP4' }}{% if item.height %}p{% endif %}
-            </option>
-          {% endfor %}
-        </select>
-      </form>
-      <video controls playsinline preload="metadata" width="960" poster="{{ thumbnail or '' }}"
-             src="{{ url_for('stream', url=video_url, quality=quality) }}">
-        Your browser does not support HTML5 video.
-      </video>
-    {% endif %}
-  </main>
-</body>
-</html>
-"""
+def _render_index(**context):
+    values = {
+        "ffmpeg_warning": FFMPEG_WARNING,
+        "qualities": QUALITIES,
+        "quality": 720,
+        "title": None,
+        "video_url": "",
+        "watching": False,
+        "status_url": None,
+        "error": None,
+    }
+    values.update(context)
+    return render_template("index.html", **values)
+
+
+def _job_key(video_url, quality):
+    value = f"{video_url}\0{quality}".encode("utf-8")
+    return hashlib.sha256(value).hexdigest()
+
+
+def _update_progress(key, data):
+    with _jobs_lock:
+        job = _jobs.get(key)
+        if job and job["status"] == "preparing":
+            job.update(data)
+
+
+def _prepare_video(key, video_url, quality):
+    try:
+        result = download_video(video_url, quality, lambda data: _update_progress(key, data))
+    except PlayerError as error:
+        app.logger.exception("Video preparation failed for %r", video_url)
+        with _jobs_lock:
+            _jobs[key].update(status="error", error=str(error), message=str(error))
+        return
+    except Exception as error:
+        app.logger.exception("Unexpected video preparation failure for %r", video_url)
+        with _jobs_lock:
+            _jobs[key].update(status="error", error=str(error), message=str(error))
+        return
+
+    with _jobs_lock:
+        _jobs[key].update(
+            status="ready",
+            progress=100,
+            message="Video ready.",
+            video_id=result["id"],
+            title=result["title"],
+        )
+
+
+def _start_job(video_url, quality, retry=False):
+    key = _job_key(video_url, quality)
+    with _jobs_lock:
+        job = _jobs.get(key)
+        if job and job["status"] in {"preparing", "ready"}:
+            return key
+        if job and job["status"] == "error" and not retry:
+            return key
+        _jobs[key] = {"status": "preparing", "progress": 0, "message": "Preparing video..."}
+        worker = threading.Thread(target=_prepare_video, args=(key, video_url, quality), daemon=True)
+        worker.start()
+    return key
 
 
 @app.get("/")
 def index():
-    return render_template_string(HOME_TEMPLATE, error=None, url="")
+    return _render_index()
 
 
 @app.post("/watch")
 def watch():
-    video_url = request.form.get("url", "")
-    if not video_url.strip():
-        return render_template_string(
-            HOME_TEMPLATE,
-            error="YouTube URL is required.",
-            url="",
-        ), 400
-    video_url = video_url.strip()
-    quality = request.form.get("quality", "best")
+    video_url = request.form.get("url", "").strip()
+    if not video_url:
+        return _render_index(error="YouTube URL is required."), 400
     try:
-        info = get_info(video_url)
-    except PlayerError as error:
-        app.logger.exception("YouTube metadata lookup failed for %r", video_url)
-        status_code = 502 if isinstance(error, NetworkError) else 400
-        return render_template_string(HOME_TEMPLATE, error=str(error), url=video_url), status_code
-    except Exception as error:
-        app.logger.exception("Unexpected error looking up YouTube video %r", video_url)
-        return render_template_string(HOME_TEMPLATE, error=str(error), url=video_url), 500
+        video_url = validate_url(video_url)
+        quality = normalize_quality(request.form.get("quality", "720"))
+    except (PlayerError, ValueError) as error:
+        return _render_index(error=str(error), video_url=video_url), 400
 
-    format_ids = {item["format_id"] for item in info["formats"]}
-    if quality != "best" and quality not in format_ids:
-        return render_template_string(
-            HOME_TEMPLATE,
-            error="That quality is not available for this video.",
-            url=video_url,
-        ), 400
-
-    selected_quality = quality
-    if selected_quality == "best":
-        selected_quality = info["formats"][-1]["format_id"]
-    return render_template_string(
-        WATCH_TEMPLATE,
-        title=info["title"],
-        formats=info["formats"],
-        thumbnail=info["thumbnail"],
+    _start_job(video_url, quality, retry=True)
+    return _render_index(
         video_url=video_url,
-        quality=selected_quality,
-        error=None,
+        quality=quality,
+        watching=True,
+        status_url=url_for("video_status", url=video_url, quality=quality),
     )
+
+
+@app.get("/api/status")
+def video_status():
+    video_url = request.args.get("url", "").strip()
+    try:
+        video_url = validate_url(video_url)
+        quality = normalize_quality(request.args.get("quality", "720"))
+    except (PlayerError, ValueError) as error:
+        return jsonify(status="error", error=str(error)), 400
+
+    key = _start_job(video_url, quality)
+    with _jobs_lock:
+        state = dict(_jobs[key])
+    if state["status"] == "ready":
+        state["stream_url"] = url_for("stream", id=state["video_id"], quality=quality)
+    return jsonify(state)
 
 
 @app.get("/stream")
 def stream():
-    video_url = request.args.get("url", "")
-    quality = request.args.get("quality", "best")
+    video_id = request.args.get("id", "")
     try:
-        media_url, headers = get_stream_url(video_url, quality)
-        range_header = request.headers.get("Range")
-        if range_header:
-            parse_range_header(range_header)
-            headers["Range"] = range_header
-        headers["Accept-Encoding"] = "identity"
-        upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 60))
+        quality = normalize_quality(request.args.get("quality", "720"))
     except ValueError as error:
         return str(error), 400
-    except PlayerError as error:
-        app.logger.exception("YouTube stream lookup failed for %r", video_url)
-        status_code = 502 if isinstance(error, NetworkError) else 400
-        return str(error), status_code
-    except requests.RequestException as error:
-        app.logger.exception("Upstream video request failed for %r", video_url)
-        return str(error) or error.__class__.__name__, 502
-    except Exception as error:
-        app.logger.exception("Unexpected error streaming YouTube video %r", video_url)
-        return str(error) or error.__class__.__name__, 502
+    if not video_id:
+        return "Video ID is required.", 400
 
-    if upstream.status_code not in {200, 206, 416}:
-        status_code = upstream.status_code
-        upstream.close()
-        return f"The video server returned HTTP {status_code}.", 502
-
-    response_headers = {}
-    for name in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
-        value = upstream.headers.get(name)
-        if value is not None:
-            response_headers[name] = value
-
-    def generate():
-        try:
-            for chunk in upstream.iter_content(chunk_size=64 * 1024):
-                if chunk:
-                    yield chunk
-        finally:
-            upstream.close()
-
-    return Response(generate(), status=upstream.status_code, headers=response_headers, direct_passthrough=True)
+    path = cache_path(video_id, quality)
+    if not path.is_file():
+        return "Prepared video is not in the cache.", 404
+    return send_file(path, mimetype="video/mp4", conditional=True, etag=True, max_age=0)
 
 
 if __name__ == "__main__":

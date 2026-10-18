@@ -1,100 +1,128 @@
 import pytest
+from werkzeug.datastructures import Headers
 
+import app as app_module
 from app import app
-from player import NetworkError, VideoUnavailableError
+from player import InvalidURLError, PlayerError, VideoUnavailableError
 
 
-def test_stream_forwards_range_and_relays_partial_response(monkeypatch):
-    captured = {}
+def test_index_shows_quality_options_and_ffmpeg_warning(monkeypatch):
+    monkeypatch.setattr(app_module, "FFMPEG_WARNING", "Install ffmpeg to prepare videos.")
 
-    class UpstreamResponse:
-        status_code = 206
-        headers = {
-            "Content-Type": "video/mp4",
-            "Content-Length": "6",
-            "Content-Range": "bytes 5-10/100",
-            "Accept-Ranges": "bytes",
-        }
+    response = app.test_client().get("/")
 
-        def iter_content(self, chunk_size):
-            assert chunk_size == 64 * 1024
-            yield b"abc"
-            yield b"123"
+    assert response.status_code == 200
+    assert b"360p" in response.data
+    assert b"480p" in response.data
+    assert b"720p" in response.data
+    assert b"Install ffmpeg" in response.data
 
-        def close(self):
-            captured["closed"] = True
 
-    def fake_get(media_url, headers, stream, timeout):
-        captured.update(url=media_url, headers=headers, stream=stream, timeout=timeout)
-        return UpstreamResponse()
+def test_watch_starts_background_preparation(monkeypatch):
+    started = {}
 
-    monkeypatch.setattr("app.get_stream_url", lambda url, quality: ("https://media/video", {"User-Agent": "viewer"}))
-    monkeypatch.setattr("app.requests.get", fake_get)
+    def capture_job(url, quality, retry=False):
+        started.update(url=url, quality=quality, retry=retry)
+
+    monkeypatch.setattr(app_module, "_start_job", capture_job)
+
+    response = app.test_client().post(
+        "/watch",
+        data={"url": "https://youtu.be/abc123", "quality": "480"},
+    )
+
+    assert response.status_code == 200
+    assert b"Preparing video..." in response.data
+    assert b"api/status" in response.data
+    assert started == {"url": "https://youtu.be/abc123", "quality": 480, "retry": True}
+
+
+def test_watch_rejects_missing_url_and_unsupported_quality(monkeypatch):
+    client = app.test_client()
+    missing = client.post("/watch", data={})
+    invalid_quality = client.post("/watch", data={"url": "https://youtu.be/abc123", "quality": "1080"})
+
+    assert missing.status_code == 400
+    assert b"YouTube URL is required" in missing.data
+    assert invalid_quality.status_code == 400
+    assert b"Choose 360p, 480p, or 720p" in invalid_quality.data
+
+
+def test_status_returns_progress_and_does_not_restart_failed_job(monkeypatch):
+    video_url = "https://youtu.be/abc123"
+    quality = 720
+    key = app_module._job_key(video_url, quality)
+    app_module._jobs[key] = {
+        "status": "error",
+        "progress": 23,
+        "message": "ERROR: original yt-dlp message",
+        "error": "ERROR: original yt-dlp message",
+    }
+    monkeypatch.setattr(app_module, "_start_job", lambda *args, **kwargs: key)
+
+    response = app.test_client().get("/api/status", query_string={"url": video_url, "quality": quality})
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "error"
+    assert payload["progress"] == 23
+    assert payload["error"] == "ERROR: original yt-dlp message"
+
+
+def test_preparation_progress_transitions_to_ready_status(monkeypatch, tmp_path):
+    video_url = "https://youtu.be/abc123"
+    quality = 480
+    key = app_module._job_key(video_url, quality)
+    app_module._jobs[key] = {"status": "preparing", "progress": 0, "message": "Preparing video..."}
+
+    def fake_download(url, selected_quality, progress_callback):
+        assert selected_quality == quality
+        progress_callback({"progress": 54, "message": "Merging streams into MP4..."})
+        return {"id": "abc123", "title": "Example title", "path": tmp_path / "abc123_480p.mp4"}
+
+    monkeypatch.setattr(app_module, "download_video", fake_download)
+    monkeypatch.setattr(app_module, "_start_job", lambda *args, **kwargs: key)
+
+    app_module._prepare_video(key, video_url, quality)
+    payload = app.test_client().get(
+        "/api/status",
+        query_string={"url": video_url, "quality": quality},
+    ).get_json()
+
+    assert payload["status"] == "ready"
+    assert payload["progress"] == 100
+    assert payload["title"] == "Example title"
+    assert payload["stream_url"] == "/stream?id=abc123&quality=480"
+
+
+def test_status_rejects_invalid_url():
+    response = app.test_client().get("/api/status", query_string={"url": "https://example.com/video"})
+
+    assert response.status_code == 400
+    assert response.get_json()["status"] == "error"
+
+
+def test_stream_serves_cached_mp4_with_conditional_range(tmp_path, monkeypatch):
+    video_file = tmp_path / "abc123_480p.mp4"
+    video_file.write_bytes(b"0123456789")
+    monkeypatch.setattr(app_module, "cache_path", lambda video_id, quality: video_file)
 
     response = app.test_client().get(
         "/stream",
-        query_string={"url": "https://youtu.be/abc123", "quality": "low"},
-        headers={"Range": "bytes=5-10"},
+        query_string={"id": "abc123", "quality": "480"},
+        headers=Headers({"Range": "bytes=2-5"}),
     )
 
     assert response.status_code == 206
-    assert response.data == b"abc123"
-    assert response.headers["Content-Type"] == "video/mp4"
-    assert response.headers["Content-Length"] == "6"
-    assert response.headers["Content-Range"] == "bytes 5-10/100"
-    assert captured["headers"]["Range"] == "bytes=5-10"
-    assert captured["headers"]["Accept-Encoding"] == "identity"
-    assert captured["stream"] is True
-    assert captured["closed"] is True
+    assert response.data == b"2345"
+    assert response.headers["Content-Type"].startswith("video/mp4")
+    assert response.headers["Content-Range"] == "bytes 2-5/10"
+    assert response.headers["Content-Length"] == "4"
 
 
-def test_stream_rejects_malformed_range_before_upstream_request(monkeypatch):
-    monkeypatch.setattr("app.get_stream_url", lambda url, quality: ("https://media/video", {}))
-    monkeypatch.setattr("app.requests.get", lambda *args, **kwargs: pytest.fail("unexpected upstream request"))
+def test_stream_returns_not_found_before_video_is_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "cache_path", lambda video_id, quality: tmp_path / "missing.mp4")
 
-    response = app.test_client().get(
-        "/stream",
-        query_string={"url": "https://youtu.be/abc123"},
-        headers={"Range": "bytes=invalid"},
-    )
+    response = app.test_client().get("/stream", query_string={"id": "abc123", "quality": "720"})
 
-    assert response.status_code == 400
-    assert b"Malformed byte range" in response.data
-
-
-def test_watch_reports_network_failures_as_bad_gateway(monkeypatch):
-    def fail_info(url):
-        raise NetworkError("Could not reach YouTube.")
-
-    monkeypatch.setattr("app.get_info", fail_info)
-
-    response = app.test_client().post("/watch", data={"url": "https://youtu.be/abc123"})
-
-    assert response.status_code == 502
-    assert b"Could not reach YouTube" in response.data
-
-
-def test_watch_reports_missing_url_with_clear_400():
-    client = app.test_client()
-
-    assert b'name="url"' in client.get("/").data
-    response = client.post("/watch", data={})
-
-    assert response.status_code == 400
-    assert b"YouTube URL is required." in response.data
-
-
-def test_watch_displays_original_error_and_logs_traceback(monkeypatch, caplog):
-    detail = "ERROR: [youtube] example: Sign in to confirm your age"
-
-    def fail_info(url):
-        raise VideoUnavailableError(detail)
-
-    monkeypatch.setattr("app.get_info", fail_info)
-
-    response = app.test_client().post("/watch", data={"url": "https://youtu.be/abc123"})
-
-    assert response.status_code == 400
-    assert detail.encode() in response.data
-    assert "YouTube metadata lookup failed" in caplog.text
-    assert "Traceback (most recent call last)" in caplog.text
+    assert response.status_code == 404

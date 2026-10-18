@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTube Viewer</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; background: #eef1e8; color: #1d2a24; }
+    body { margin: 0; min-height: 100vh; background: repeating-linear-gradient(135deg, transparent 0 28px, #dfe5d9 29px 30px); }
+    main { box-sizing: border-box; width: min(100% - 40px, 960px); margin: 5vh auto; padding: 24px 0; border-top: 5px solid #dc4e37; }
+    h1 { margin: 0 0 24px; font: 700 clamp(2rem, 7vw, 4rem)/1 Georgia, serif; overflow-wrap: anywhere; }
+    form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 20px; }
+    label { flex-basis: 100%; font-size: .85rem; font-weight: 700; }
+    input, select, button { box-sizing: border-box; min-height: 44px; border: 1px solid #87948a; border-radius: 3px; padding: 10px 12px; font: inherit; }
+    input { flex: 1 1 280px; min-width: 0; background: #fff; }
+    select { background: #fff; }
+    button { background: #1d2a24; color: #fff; cursor: pointer; }
+    video { display: block; width: 100%; max-width: 960px; aspect-ratio: 16 / 9; background: #101512; object-fit: contain; }
+    [role="alert"] { color: #a52b1c; }
+    #preparing { display: grid; gap: 10px; max-width: 480px; margin: 24px 0; }
+    progress { width: 100%; height: 12px; accent-color: #dc4e37; }
+    @media (max-width: 480px) { main { width: min(100% - 28px, 960px); margin-top: 20px; } form button { flex: 1; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="video-title">{{ title or 'YouTube Viewer' }}</h1>
+    {% if ffmpeg_warning %}<p role="alert">{{ ffmpeg_warning }}</p>{% endif %}
+    {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+    <form action="{{ url_for('watch') }}" method="post">
+      <label for="video-url">YouTube URL</label>
+      <input id="video-url" name="url" type="url" required value="{{ video_url or '' }}" placeholder="https://www.youtube.com/watch?v=...">
+      <label for="quality">Quality</label>
+      <select id="quality" name="quality">
+        {% for option in qualities %}
+          <option value="{{ option }}" {% if option == quality %}selected{% endif %}>{{ option }}p</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Watch</button>
+    </form>
+    {% if watching %}
+      <section id="preparing" aria-live="polite">
+        <strong id="status-message">Preparing video...</strong>
+        <progress id="download-progress" max="100" value="0"></progress>
+      </section>
+      <video id="video-player" controls playsinline preload="metadata" hidden></video>
+      <script>
+        const statusUrl = {{ status_url|tojson }};
+        const statusMessage = document.getElementById('status-message');
+        const progress = document.getElementById('download-progress');
+        const preparation = document.getElementById('preparing');
+        const video = document.getElementById('video-player');
+
+        async function pollStatus() {
+          try {
+            const response = await fetch(statusUrl, { cache: 'no-store' });
+            const state = await response.json();
+            if (!response.ok) throw new Error(state.error || 'Could not check video status.');
+            statusMessage.textContent = state.message || 'Preparing video...';
+            progress.value = state.progress || 0;
+            if (state.status === 'ready') {
+              document.getElementById('video-title').textContent = state.title;
+              video.src = state.stream_url;
+              video.hidden = false;
+              preparation.hidden = true;
+              video.load();
+              return;
+            }
+            if (state.status === 'error') throw new Error(state.error || 'Video preparation failed.');
+            window.setTimeout(pollStatus, 1000);
+          } catch (error) {
+            statusMessage.textContent = error.message;
+            progress.hidden = true;
+          }
+        }
+
+        pollStatus();
+      </script>
+    {% endif %}
+  </main>
+</body>
+</html>
