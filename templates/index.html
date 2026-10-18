@@ -67,7 +67,7 @@
               return;
             }
             if (state.status === 'error') throw new Error(state.error || 'Video preparation failed.');
-            window.setTimeout(pollStatus, 1000);
+            window.setTimeout(pollStatus, 9000);
           } catch (error) {
             statusMessage.textContent = error.message;
             progress.hidden = true;

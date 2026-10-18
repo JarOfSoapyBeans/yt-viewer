@@ -13,6 +13,6 @@ if not exist ".venv\Scripts\activate.bat" (
 call ".venv\Scripts\activate.bat"
 if errorlevel 1 exit /b 1
 
-start "YouTube Viewer" cmd /k python app.py
+start "YouTube Viewer" cmd /k ".venv\Scripts\waitress-serve.exe --listen=127.0.0.1:5000 app:app"
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:5000"

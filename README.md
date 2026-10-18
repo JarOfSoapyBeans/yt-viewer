@@ -14,9 +14,12 @@ python app.py
 ```
 
 Install ffmpeg separately before starting the app. On Debian/Ubuntu, run
-`sudo apt install ffmpeg`. Open `http://127.0.0.1:5000`, submit a YouTube video
-URL, and choose 360p, 480p, or 720p. Video and audio download in the background;
-the page shows progress and enables playback when the MP4 is ready.
+`sudo apt install ffmpeg`. `python app.py` starts Waitress bound to
+`127.0.0.1:5000` with Flask debug disabled. Open `http://127.0.0.1:5000`, submit
+a YouTube video URL, and choose 360p, 480p, or 720p. Video and audio download in
+the background; the page shows progress and enables playback when the MP4 is
+ready. Non-media requests are limited to 10 per minute per IP; video Range
+requests are exempt so seeking continues to work.
 
 ## Test
 

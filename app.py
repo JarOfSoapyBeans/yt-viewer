@@ -2,8 +2,11 @@
 
 import hashlib
 import threading
+import time
+from collections import defaultdict, deque
 
 from flask import Flask, jsonify, render_template, request, send_file, url_for
+from waitress import serve
 
 from player import (
     PlayerError,
@@ -18,16 +21,41 @@ from player import (
 
 
 app = Flask(__name__)
+app.config["DEBUG"] = False
 
 _jobs = {}
 _jobs_lock = threading.Lock()
+_rate_windows = defaultdict(deque)
+_rate_lock = threading.Lock()
+RATE_LIMIT_REQUESTS = 10
+RATE_LIMIT_SECONDS = 60
 clean_cache()
 FFMPEG_AVAILABLE = bool(ffmpeg_path())
 FFMPEG_WARNING = None if FFMPEG_AVAILABLE else (
     "ffmpeg is not installed. Install ffmpeg and restart the viewer to merge video and audio."
 )
 if FFMPEG_WARNING:
-  app.logger.error(FFMPEG_WARNING)
+    app.logger.error(FFMPEG_WARNING)
+
+
+@app.before_request
+def enforce_rate_limit():
+    if request.endpoint in {"stream", "static"}:
+        return None
+
+    client_ip = request.remote_addr or "unknown"
+    now = time.monotonic()
+    with _rate_lock:
+        requests = _rate_windows[client_ip]
+        while requests and now - requests[0] >= RATE_LIMIT_SECONDS:
+            requests.popleft()
+        if len(requests) >= RATE_LIMIT_REQUESTS:
+            retry_after = max(1, int(RATE_LIMIT_SECONDS - (now - requests[0])))
+            return jsonify(error="Rate limit exceeded. Try again shortly."), 429, {
+                "Retry-After": str(retry_after)
+            }
+        requests.append(now)
+    return None
 
 def _render_index(**context):
     values = {
@@ -152,5 +180,9 @@ def stream():
     return send_file(path, mimetype="video/mp4", conditional=True, etag=True, max_age=0)
 
 
+def run():
+    serve(app, host="127.0.0.1", port=5000, threads=8)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    run()

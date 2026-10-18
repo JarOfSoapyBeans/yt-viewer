@@ -3,7 +3,6 @@ from werkzeug.datastructures import Headers
 
 import app as app_module
 from app import app
-from player import InvalidURLError, PlayerError, VideoUnavailableError
 
 
 def test_index_shows_quality_options_and_ffmpeg_warning(monkeypatch):
@@ -46,6 +45,51 @@ def test_watch_rejects_missing_url_and_unsupported_quality(monkeypatch):
     assert b"YouTube URL is required" in missing.data
     assert invalid_quality.status_code == 400
     assert b"Choose 360p, 480p, or 720p" in invalid_quality.data
+
+
+def test_watch_rejects_non_youtube_hosts(monkeypatch):
+    monkeypatch.setattr("app._start_job", lambda *args, **kwargs: pytest.fail("invalid host reached downloader"))
+
+    response = app.test_client().post(
+        "/watch",
+        data={"url": "https://youtube.com.example/watch?v=abc123"},
+    )
+
+    assert response.status_code == 400
+    assert b"valid YouTube video URL" in response.data
+
+
+def test_rate_limit_caps_watch_requests_per_ip_and_isolates_clients(monkeypatch):
+    monkeypatch.setattr("app._start_job", lambda *args, **kwargs: None)
+    client = app.test_client()
+    form = {"url": "https://youtu.be/abc123", "quality": "720"}
+
+    for _ in range(10):
+        response = client.post("/watch", data=form, environ_base={"REMOTE_ADDR": "192.0.2.10"})
+        assert response.status_code == 200
+
+    limited = client.post("/watch", data=form, environ_base={"REMOTE_ADDR": "192.0.2.10"})
+    different_ip = client.post("/watch", data=form, environ_base={"REMOTE_ADDR": "192.0.2.11"})
+
+    assert limited.status_code == 429
+    assert limited.headers["Retry-After"]
+    assert b"Rate limit exceeded" in limited.data
+    assert different_ip.status_code == 200
+
+
+def test_run_uses_waitress_on_loopback_with_debug_disabled(monkeypatch):
+    captured = {}
+
+    def fake_serve(flask_app, **options):
+        captured.update(app=flask_app, options=options)
+
+    monkeypatch.setattr(app_module, "serve", fake_serve)
+
+    app_module.run()
+
+    assert app.debug is False
+    assert captured["app"] is app
+    assert captured["options"] == {"host": "127.0.0.1", "port": 5000, "threads": 8}
 
 
 def test_status_returns_progress_and_does_not_restart_failed_job(monkeypatch):
