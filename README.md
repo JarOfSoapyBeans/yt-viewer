@@ -21,6 +21,13 @@ the background; the page shows progress and enables playback when the MP4 is
 ready. Non-media requests are limited to 10 per minute per IP; video Range
 requests are exempt so seeking continues to work.
 
+## How to run
+
+On Windows, create `.venv` and install the requirements first. Ensure
+`cloudflared` is on `PATH` and `%USERPROFILE%\.cloudflared\config-yt-viewer.yml`
+is configured for the `yt-viewer` tunnel, then run `start-all.bat`. It opens one
+Command Prompt for the app and another for the Cloudflare tunnel.
+
 ## Test
 
 ```sh
