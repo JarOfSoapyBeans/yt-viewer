@@ -15,8 +15,11 @@ from player import (
     clean_cache,
     download_video,
     ffmpeg_path,
+    get_info,
     normalize_quality,
+    search_videos,
     validate_url,
+    video_id_from_url,
 )
 
 
@@ -56,6 +59,7 @@ def enforce_rate_limit():
             }
         requests.append(now)
     return None
+
 
 def _render_index(**context):
     values = {
@@ -164,15 +168,54 @@ def video_status():
     return jsonify(state)
 
 
+@app.get("/api/info")
+def video_info():
+    video_url = request.args.get("url", request.args.get("id", "")).strip()
+    try:
+        video_url = validate_url(video_url)
+        info = get_info(video_url)
+    except (PlayerError, ValueError) as error:
+        return jsonify(error=str(error)), 400
+    return jsonify(info)
+
+
+@app.get("/api/search")
+def search():
+    query = request.args.get("q", "")
+    try:
+        limit = int(request.args.get("limit", "12"))
+        if limit < 1:
+            raise ValueError("Search limit must be a positive integer.")
+        if limit > 96:
+            raise ValueError("Search limit must be 96 or fewer.")
+        skip = int(request.args.get("skip", "0"))
+        if skip < 0 or skip > limit:
+            raise ValueError("Search offset must be between zero and the search limit.")
+        videos = search_videos(query, limit, skip)
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    except PlayerError as error:
+        return jsonify(error=str(error)), 502
+    return jsonify(videos)
+
+
 @app.get("/stream")
 def stream():
-    video_id = request.args.get("id", "")
+    video_url = request.args.get("id", request.args.get("url", "")).strip()
+    if "://" in video_url:
+        try:
+            video_url = validate_url(video_url)
+        except PlayerError as error:
+            return str(error), 400
+        video_id = video_id_from_url(video_url)
+    else:
+        video_id = video_url
+    if not video_id:
+        return "Video ID is required.", 400
     try:
         quality = normalize_quality(request.args.get("quality", "720"))
     except ValueError as error:
         return str(error), 400
-    if not video_id:
-        return "Video ID is required.", 400
 
     path = cache_path(video_id, quality)
     if not path.is_file():

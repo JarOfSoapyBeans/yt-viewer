@@ -6,77 +6,493 @@
   <title>YouTube Viewer</title>
   <style>
     :root { color-scheme: light; font-family: system-ui, sans-serif; background: #eef1e8; color: #1d2a24; }
+    [hidden] { display: none !important; }
     body { margin: 0; min-height: 100vh; background: repeating-linear-gradient(135deg, transparent 0 28px, #dfe5d9 29px 30px); }
-    main { box-sizing: border-box; width: min(100% - 40px, 960px); margin: 5vh auto; padding: 24px 0; border-top: 5px solid #dc4e37; }
+    main { box-sizing: border-box; width: min(100% - 40px, 1120px); margin: 5vh auto; padding: 24px 0; border-top: 5px solid #dc4e37; }
     h1 { margin: 0 0 24px; font: 700 clamp(2rem, 7vw, 4rem)/1 Georgia, serif; overflow-wrap: anywhere; }
-    form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 20px; }
+    h2 { margin: 0 0 16px; font-size: clamp(1.35rem, 4vw, 2rem); }
+    form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 24px; }
     label { flex-basis: 100%; font-size: .85rem; font-weight: 700; }
     input, select, button { box-sizing: border-box; min-height: 44px; border: 1px solid #87948a; border-radius: 3px; padding: 10px 12px; font: inherit; }
     input { flex: 1 1 280px; min-width: 0; background: #fff; }
     select { background: #fff; }
     button { background: #1d2a24; color: #fff; cursor: pointer; }
-    video { display: block; width: 100%; max-width: 960px; aspect-ratio: 16 / 9; background: #101512; object-fit: contain; }
+    button:disabled { cursor: wait; opacity: .65; }
+    #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 20px; }
+    .video-card { display: block; width: 100%; min-width: 0; padding: 0; overflow: hidden; border: 0; border-radius: 5px; background: #fff; color: inherit; text-align: left; box-shadow: 0 2px 8px #1d2a2418; }
+    .video-card:hover { outline: 2px solid #dc4e37; }
+    .thumbnail { position: relative; display: grid; aspect-ratio: 16 / 9; place-items: center; overflow: hidden; background: #dfe5d9; color: #536057; }
+    .thumbnail img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .thumbnail-fallback { padding: 12px; text-align: center; }
+    .duration { position: absolute; right: 7px; bottom: 7px; border-radius: 3px; padding: 2px 5px; background: #101512dd; color: #fff; font-size: .75rem; font-variant-numeric: tabular-nums; }
+    .card-copy { padding: 11px 12px 13px; }
+    .card-title { display: -webkit-box; min-height: 2.8em; margin: 0 0 7px; overflow: hidden; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .channel, .details { margin: 0; overflow: hidden; color: #536057; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
+    .details { margin-top: 3px; font-size: .75rem; }
+    #load-more { display: block; min-width: 140px; margin: 24px auto 0; }
+    #more-results-message { margin: 14px 0 0; color: #536057; font-size: .85rem; text-align: center; }
+    .spinner { display: inline-block; width: 14px; height: 14px; margin-left: 7px; border: 2px solid #ffffff70; border-top-color: #fff; border-radius: 50%; vertical-align: -3px; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #search-message, #player-message { margin: 20px 0; }
     [role="alert"] { color: #a52b1c; }
+    #player-view { max-width: 960px; }
+    #player-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
+    #player-controls label { flex: 0 0 auto; }
+    #video-player { display: block; width: 100%; aspect-ratio: 16 / 9; background: #101512; object-fit: contain; }
     #preparing { display: grid; gap: 10px; max-width: 480px; margin: 24px 0; }
     progress { width: 100%; height: 12px; accent-color: #dc4e37; }
-    @media (max-width: 480px) { main { width: min(100% - 28px, 960px); margin-top: 20px; } form button { flex: 1; } }
+    .skeleton { min-height: 230px; border-radius: 5px; background: linear-gradient(100deg, #dfe5d9 30%, #f7f8f4 50%, #dfe5d9 70%); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
+    @keyframes shimmer { to { background-position-x: -200%; } }
+    @media (max-width: 480px) {
+      main { width: min(100% - 28px, 1120px); margin-top: 20px; }
+      form button { flex: 1; }
+      #results { grid-template-columns: 1fr; gap: 14px; }
+      .video-card { display: grid; grid-template-columns: minmax(120px, 42%) 1fr; }
+      .thumbnail { height: 100%; min-height: 95px; aspect-ratio: auto; }
+      .card-copy { align-self: center; padding: 9px; }
+      .card-title { min-height: 0; }
+      #player-controls label { flex-basis: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) { .skeleton, .spinner { animation: none; } }
   </style>
 </head>
 <body>
   <main>
-    <h1 id="video-title">{{ title or 'YouTube Viewer' }}</h1>
+    <h1 id="page-title">YouTube Viewer</h1>
     {% if ffmpeg_warning %}<p role="alert">{{ ffmpeg_warning }}</p>{% endif %}
     {% if error %}<p role="alert">{{ error }}</p>{% endif %}
-    <form action="{{ url_for('watch') }}" method="post">
-      <label for="video-url">YouTube URL</label>
-      <input id="video-url" name="url" type="url" required value="{{ video_url or '' }}" placeholder="https://www.youtube.com/watch?v=...">
-      <label for="quality">Quality</label>
-      <select id="quality" name="quality">
-        {% for option in qualities %}
-          <option value="{{ option }}" {% if option == quality %}selected{% endif %}>{{ option }}p</option>
-        {% endfor %}
-      </select>
-      <button type="submit">Watch</button>
-    </form>
-    {% if watching %}
+    <section id="search-view" {% if watching %}hidden{% endif %}>
+      <form id="search-form">
+        <label for="search-query">Search YouTube videos</label>
+        <input id="search-query" name="q" type="search" autocomplete="off" placeholder="Search videos or paste a YouTube link">
+        <button id="search-submit" type="submit">Search</button>
+      </form>
+      <p id="search-message" aria-live="polite" hidden></p>
+      <div id="results" aria-live="polite"></div>
+      <button id="load-more" type="button" hidden>Show more<span id="more-spinner" class="spinner" aria-hidden="true" hidden></span></button>
+      <p id="more-results-message" aria-live="polite" hidden>No more results</p>
+    </section>
+    <section id="player-view" {% if not watching %}hidden{% endif %}>
+      <button id="back-to-results" type="button">Back to results</button>
+      <h2 id="video-title">{{ title or '' }}</h2>
+      <div id="player-controls">
+        <label for="quality">Quality</label>
+        <select id="quality">
+          {% for option in qualities %}
+            <option value="{{ option }}" {% if option == quality %}selected{% endif %}>{{ option }}p</option>
+          {% endfor %}
+        </select>
+      </div>
       <section id="preparing" aria-live="polite">
         <strong id="status-message">Preparing video...</strong>
         <progress id="download-progress" max="100" value="0"></progress>
       </section>
+      <p id="player-message" role="alert" hidden></p>
       <video id="video-player" controls playsinline preload="metadata" hidden></video>
-      <script>
-        const statusUrl = {{ status_url|tojson }};
-        const statusMessage = document.getElementById('status-message');
-        const progress = document.getElementById('download-progress');
-        const preparation = document.getElementById('preparing');
-        const video = document.getElementById('video-player');
-
-        async function pollStatus() {
-          try {
-            const response = await fetch(statusUrl, { cache: 'no-store' });
-            const state = await response.json();
-            if (!response.ok) throw new Error(state.error || 'Could not check video status.');
-            statusMessage.textContent = state.message || 'Preparing video...';
-            progress.value = state.progress || 0;
-            if (state.status === 'ready') {
-              document.getElementById('video-title').textContent = state.title;
-              video.src = state.stream_url;
-              video.hidden = false;
-              preparation.hidden = true;
-              video.load();
-              return;
-            }
-            if (state.status === 'error') throw new Error(state.error || 'Video preparation failed.');
-            window.setTimeout(pollStatus, 9000);
-          } catch (error) {
-            statusMessage.textContent = error.message;
-            progress.hidden = true;
-          }
-        }
-
-        pollStatus();
-      </script>
-    {% endif %}
+    </section>
   </main>
+  <script>
+    const initialWatching = {{ watching|tojson }};
+    const initialVideoUrl = {{ video_url|tojson }};
+    const initialStatusUrl = {{ status_url|tojson }};
+    const searchForm = document.getElementById('search-form');
+    const searchInput = document.getElementById('search-query');
+    const searchView = document.getElementById('search-view');
+    const resultsElement = document.getElementById('results');
+    const searchMessage = document.getElementById('search-message');
+    const loadMoreButton = document.getElementById('load-more');
+    const moreSpinner = document.getElementById('more-spinner');
+    const moreResultsMessage = document.getElementById('more-results-message');
+    const searchButton = document.getElementById('search-submit');
+    const playerView = document.getElementById('player-view');
+    const videoTitle = document.getElementById('video-title');
+    const qualitySelect = document.getElementById('quality');
+    const statusMessage = document.getElementById('status-message');
+    const progress = document.getElementById('download-progress');
+    const preparation = document.getElementById('preparing');
+    const playerMessage = document.getElementById('player-message');
+    const video = document.getElementById('video-player');
+    const resultStates = new Map();
+    let currentQuery = '';
+    let currentLimit = 12;
+    let hasMoreResults = true;
+    let currentVideoId = '';
+    let statusTimer = null;
+    let searchSequence = 0;
+
+    function updateUrl(query, videoId = '', replace = false) {
+      const url = new URL(window.location.href);
+      if (query) url.searchParams.set('q', query);
+      else url.searchParams.delete('q');
+      if (videoId) url.searchParams.set('video', videoId);
+      else url.searchParams.delete('video');
+      const method = replace ? 'replaceState' : 'pushState';
+      history[method]({ view: videoId ? 'player' : 'results', query, videoId }, '', url);
+    }
+
+    function formatViews(value) {
+      if (value === null || value === undefined) return 'Views unknown';
+      return `${new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value)} views`;
+    }
+
+    function formatDate(value) {
+      if (!value || !/^\d{8}$/.test(String(value))) return 'Date unknown';
+      const uploaded = new Date(Date.UTC(Number(value.slice(0, 4)), Number(value.slice(4, 6)) - 1, Number(value.slice(6, 8))));
+      const days = Math.round((uploaded.getTime() - Date.now()) / 86400000);
+      const units = [
+        ['year', 365], ['month', 30], ['week', 7], ['day', 1]
+      ];
+      for (const [unit, size] of units) {
+        if (Math.abs(days) >= size || unit === 'day') {
+          return new Intl.RelativeTimeFormat('en', { numeric: 'always' }).format(Math.round(days / size), unit);
+        }
+      }
+      return 'Date unknown';
+    }
+
+    function formatDuration(value) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return '';
+      const seconds = Math.max(0, Math.floor(Number(value)));
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const remainder = seconds % 60;
+      return hours
+        ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+        : `${minutes}:${String(remainder).padStart(2, '0')}`;
+    }
+
+    function renderSkeletons(append = false) {
+      if (!append) resultsElement.replaceChildren();
+      for (let index = 0; index < 6; index += 1) {
+        const skeleton = document.createElement('div');
+        skeleton.className = 'skeleton search-skeleton';
+        skeleton.setAttribute('aria-hidden', 'true');
+        resultsElement.append(skeleton);
+      }
+    }
+
+    function makeCard(item) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'video-card';
+      card.setAttribute('aria-label', `Play ${item.title || 'video'}`);
+      const thumbnail = document.createElement('span');
+      thumbnail.className = 'thumbnail';
+      const image = document.createElement('img');
+      image.src = item.thumbnail || `https://i.ytimg.com/vi/${encodeURIComponent(item.id)}/hqdefault.jpg`;
+      image.alt = '';
+      image.loading = 'lazy';
+      const fallback = document.createElement('span');
+      fallback.className = 'thumbnail-fallback';
+      fallback.textContent = 'Thumbnail unavailable';
+      fallback.hidden = true;
+      image.addEventListener('error', () => {
+        image.hidden = true;
+        fallback.hidden = false;
+      }, { once: true });
+      thumbnail.append(image, fallback);
+      const durationText = formatDuration(item.duration);
+      if (durationText) {
+        const badge = document.createElement('span');
+        badge.className = 'duration';
+        badge.textContent = durationText;
+        thumbnail.append(badge);
+      }
+      const copy = document.createElement('span');
+      copy.className = 'card-copy';
+      const title = document.createElement('span');
+      title.className = 'card-title';
+      title.textContent = item.title || 'Untitled video';
+      const channel = document.createElement('span');
+      channel.className = 'channel';
+      channel.textContent = item.channel || 'Unknown channel';
+      const details = document.createElement('span');
+      details.className = 'details';
+      details.textContent = `${formatViews(item.view_count)} - ${formatDate(item.upload_date)}`;
+      copy.append(title, channel, details);
+      card.append(thumbnail, copy);
+      card.addEventListener('click', () => openVideo(item.id, item.title));
+      return card;
+    }
+
+    function saveCurrentResults() {
+      resultStates.set(currentQuery, {
+        results: Array.from(resultsElement.querySelectorAll('.video-card')).map((card) => card._videoData),
+        limit: currentLimit,
+        hasMoreResults,
+        scrollY: window.scrollY
+      });
+    }
+
+    function renderResults(items, append = false) {
+      if (!append) resultsElement.replaceChildren();
+      const existingIds = new Set(
+        Array.from(resultsElement.querySelectorAll('.video-card')).map((card) => card._videoData.id)
+      );
+      let added = 0;
+      for (const item of items) {
+        if (!item.id || existingIds.has(item.id)) continue;
+        const card = makeCard(item);
+        card._videoData = item;
+        resultsElement.append(card);
+        existingIds.add(item.id);
+        added += 1;
+      }
+      searchMessage.hidden = true;
+      searchMessage.textContent = '';
+      return added;
+    }
+
+    function updateMoreResults() {
+      const hasResults = resultsElement.querySelectorAll('.video-card').length > 0;
+      const canShowMore = hasMoreResults && currentLimit < 96 && hasResults;
+      loadMoreButton.hidden = !canShowMore;
+      moreResultsMessage.hidden = hasMoreResults || !hasResults;
+    }
+
+    async function search(query, limit = 12, append = false, updateHistory = false) {
+      const token = ++searchSequence;
+      const previousLimit = currentLimit;
+      const previousHasMore = hasMoreResults;
+      currentQuery = query;
+      currentLimit = limit;
+      hasMoreResults = true;
+      if (updateHistory) updateUrl(query);
+      searchInput.value = query;
+      searchMessage.hidden = true;
+      if (append) {
+        loadMoreButton.disabled = true;
+        moreSpinner.hidden = false;
+      } else {
+        loadMoreButton.hidden = true;
+      }
+      moreResultsMessage.hidden = true;
+      searchButton.disabled = true;
+      renderSkeletons(append);
+      const params = new URLSearchParams({
+        q: query,
+        limit: String(limit),
+        skip: String(append ? previousLimit : 0)
+      });
+      try {
+        const response = await fetch(`/api/search?${params}`);
+        const payload = await response.json();
+        if (token !== searchSequence) return;
+        if (!response.ok) throw new Error(payload.error || 'Search failed. Please try again.');
+        resultsElement.querySelectorAll('.search-skeleton').forEach((skeleton) => skeleton.remove());
+        const newCount = renderResults(payload, append);
+        const requestedCount = append ? limit - previousLimit : limit;
+        hasMoreResults = newCount >= requestedCount && currentLimit < 96;
+        if (!append && payload.length === 0) {
+          searchMessage.textContent = 'No videos found. Try another search.';
+          searchMessage.hidden = false;
+        }
+        updateMoreResults();
+        saveCurrentResults();
+      } catch (error) {
+        if (token !== searchSequence) return;
+        resultsElement.querySelectorAll('.search-skeleton').forEach((skeleton) => skeleton.remove());
+        if (!append) resultsElement.replaceChildren();
+        else {
+          currentLimit = previousLimit;
+          hasMoreResults = previousHasMore;
+        }
+        searchMessage.textContent = error.message || 'Search failed. Please try again.';
+        searchMessage.hidden = false;
+        updateMoreResults();
+        saveCurrentResults();
+      } finally {
+        if (token === searchSequence) {
+          searchButton.disabled = false;
+          loadMoreButton.disabled = false;
+          moreSpinner.hidden = true;
+        }
+      }
+    }
+
+    function youtubeLink(value) {
+      if (/^[A-Za-z0-9_-]{11}$/.test(value)) return value;
+      try {
+        const parsed = new URL(value);
+        const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+        if (host === 'youtu.be') return value;
+        if (['youtube.com', 'm.youtube.com', 'music.youtube.com'].includes(host)) return value;
+      } catch (_) {
+        return '';
+      }
+      return '';
+    }
+
+    async function beginSearch(value) {
+      const query = value.trim();
+      if (!query) {
+        searchMessage.textContent = 'Enter a search term or paste a YouTube link.';
+        searchMessage.hidden = false;
+        return;
+      }
+      const directVideo = youtubeLink(query);
+      if (directVideo) {
+        try {
+          const response = await fetch(`/api/info?${new URLSearchParams({ url: directVideo })}`);
+          const info = await response.json();
+          if (!response.ok) throw new Error(info.error || 'Could not open this video.');
+          openVideo(info.id, info.title, true);
+        } catch (error) {
+          searchMessage.textContent = error.message || 'Could not open this video.';
+          searchMessage.hidden = false;
+        }
+        return;
+      }
+      resultStates.delete(query);
+      await search(query, 12, false, true);
+    }
+
+    function startPlayback(videoId, selectedQuality, statusUrl = '') {
+      if (statusTimer) window.clearTimeout(statusTimer);
+      currentVideoId = videoId;
+      video.pause();
+      video.removeAttribute('src');
+      video.hidden = true;
+      video.load();
+      preparation.hidden = false;
+      playerMessage.hidden = true;
+      progress.hidden = false;
+      progress.value = 0;
+      statusMessage.textContent = 'Preparing video...';
+      const url = statusUrl || `/api/status?${new URLSearchParams({ url: videoId, quality: String(selectedQuality) })}`;
+      async function pollStatus() {
+        try {
+          const response = await fetch(url, { cache: 'no-store' });
+          const state = await response.json();
+          if (!response.ok) throw new Error(state.error || 'Could not check video status.');
+          statusMessage.textContent = state.message || 'Preparing video...';
+          progress.value = state.progress || 0;
+          if (state.status === 'ready') {
+            videoTitle.textContent = state.title || videoTitle.textContent;
+            video.src = state.stream_url;
+            video.hidden = false;
+            preparation.hidden = true;
+            video.load();
+            return;
+          }
+          if (state.status === 'error') throw new Error(state.error || 'Video preparation failed.');
+          statusTimer = window.setTimeout(pollStatus, 9000);
+        } catch (error) {
+          statusMessage.textContent = error.message;
+          progress.hidden = true;
+        }
+      }
+      pollStatus();
+    }
+
+    async function loadVideoTitle(videoId) {
+      try {
+        const response = await fetch(`/api/info?${new URLSearchParams({ id: videoId })}`);
+        const info = await response.json();
+        if (!response.ok) throw new Error(info.error || 'Could not load video information.');
+        if (info.title) videoTitle.textContent = info.title;
+      } catch (error) {
+        playerMessage.textContent = error.message || 'Could not load video information.';
+        playerMessage.hidden = false;
+      }
+    }
+
+    function openVideo(videoId, title, direct = false) {
+      if (!videoId) return;
+      saveCurrentResults();
+      currentVideoId = videoId;
+      videoTitle.textContent = title || 'Preparing video...';
+      searchView.hidden = true;
+      playerView.hidden = false;
+      const queryString = new URL(window.location.href).searchParams.get('q') || currentQuery;
+      if (direct) currentQuery = queryString;
+      updateUrl(queryString, videoId);
+      startPlayback(videoId, qualitySelect.value);
+      window.scrollTo(0, 0);
+    }
+
+    function showResults(query, restoreScroll = true) {
+      if (statusTimer) window.clearTimeout(statusTimer);
+      video.pause();
+      searchView.hidden = false;
+      playerView.hidden = true;
+      currentQuery = query || '';
+      searchInput.value = currentQuery;
+      const saved = resultStates.get(currentQuery);
+      if (saved) {
+        currentLimit = saved.limit;
+        hasMoreResults = saved.hasMoreResults;
+        resultsElement.replaceChildren(...saved.results.map((item) => {
+          const card = makeCard(item);
+          card._videoData = item;
+          return card;
+        }));
+        updateMoreResults();
+        searchMessage.hidden = true;
+        if (restoreScroll) window.scrollTo(0, saved.scrollY);
+      } else if (currentQuery) {
+        search(currentQuery, 12, false, false);
+      } else {
+        resultsElement.replaceChildren();
+        searchMessage.hidden = true;
+      }
+    }
+
+    searchForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      beginSearch(searchInput.value);
+    });
+    loadMoreButton.addEventListener('click', () => {
+      if (currentLimit >= 96 || loadMoreButton.disabled) return;
+      search(currentQuery, Math.min(96, currentLimit + 12), true, false);
+    });
+    document.getElementById('back-to-results').addEventListener('click', () => history.back());
+    qualitySelect.addEventListener('change', () => {
+      if (currentVideoId) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('quality', qualitySelect.value);
+        history.replaceState({ ...(history.state || {}), view: 'player' }, '', url);
+        startPlayback(currentVideoId, qualitySelect.value);
+      }
+    });
+    window.addEventListener('popstate', (event) => {
+      const url = new URL(window.location.href);
+      const query = url.searchParams.get('q') || '';
+      const videoId = url.searchParams.get('video');
+      if (videoId) {
+        searchView.hidden = true;
+        playerView.hidden = false;
+        currentVideoId = videoId;
+        qualitySelect.value = url.searchParams.get('quality') || '720';
+        loadVideoTitle(videoId);
+        startPlayback(videoId, qualitySelect.value);
+      } else {
+        showResults(query, true);
+      }
+    });
+
+    const initialUrl = new URL(window.location.href);
+    const initialQuery = initialUrl.searchParams.get('q') || '';
+    const initialVideo = initialUrl.searchParams.get('video');
+    currentQuery = initialQuery;
+    searchInput.value = initialQuery;
+    history.replaceState({ view: 'results', query: initialQuery }, '', window.location.href);
+    if (initialQuery) search(initialQuery, 12, false, false);
+    if (initialWatching && initialVideoUrl) {
+      const initialId = initialVideoUrl.length === 11
+        ? initialVideoUrl
+        : new URL(initialVideoUrl).searchParams.get('v') || initialVideoUrl.split('/').filter(Boolean).pop();
+      updateUrl(initialQuery, initialId);
+      startPlayback(initialId, qualitySelect.value, initialStatusUrl);
+    } else if (initialVideo) {
+      updateUrl(initialQuery);
+      updateUrl(initialQuery, initialVideo);
+      qualitySelect.value = initialUrl.searchParams.get('quality') || '720';
+      loadVideoTitle(initialVideo);
+      searchView.hidden = true;
+      playerView.hidden = false;
+      startPlayback(initialVideo, qualitySelect.value);
+    }
+  </script>
 </body>
 </html>

@@ -146,6 +146,154 @@ def test_status_rejects_invalid_url():
     assert response.get_json()["status"] == "error"
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_status"),
+    [("", 400), ("   ", 400), ("x" * 201, 400)],
+)
+def test_search_rejects_invalid_queries(query, expected_status):
+    response = app.test_client().get(
+        "/api/search",
+        query_string={"q": query},
+        environ_base={"REMOTE_ADDR": "192.0.2.80"},
+    )
+
+    assert response.status_code == expected_status
+    assert response.get_json()["error"]
+
+
+def test_search_accepts_maximum_limit_and_returns_video_list(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        app_module,
+        "search_videos",
+        lambda query, limit, skip: captured.update(query=query, limit=limit, skip=skip)
+        or [{"id": "abcdefghijk"}],
+    )
+
+    response = app.test_client().get(
+        "/api/search",
+        query_string={"q": "cats", "limit": 96, "skip": 12},
+        environ_base={"REMOTE_ADDR": "192.0.2.81"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == [{"id": "abcdefghijk"}]
+    assert captured == {"query": "cats", "limit": 96, "skip": 12}
+
+
+def test_search_rejects_limit_above_96():
+    response = app.test_client().get(
+        "/api/search",
+        query_string={"q": "cats", "limit": 97},
+        environ_base={"REMOTE_ADDR": "192.0.2.86"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Search limit must be 96 or fewer."
+
+
+def test_search_returns_only_results_after_skip(monkeypatch):
+    monkeypatch.setattr(
+        app_module,
+        "search_videos",
+        lambda query, limit, skip: [{"id": str(index)} for index in range(skip, limit)],
+    )
+
+    response = app.test_client().get(
+        "/api/search",
+        query_string={"q": "cats", "limit": 24, "skip": 12},
+        environ_base={"REMOTE_ADDR": "192.0.2.87"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == [{"id": str(index)} for index in range(12, 24)]
+
+
+def test_search_returns_original_ytdlp_error(monkeypatch):
+    def fail_search(*args):
+        raise app_module.PlayerError("ERROR: blocked by test")
+
+    monkeypatch.setattr(app_module, "search_videos", fail_search)
+
+    response = app.test_client().get(
+        "/api/search",
+        query_string={"q": "cats"},
+        environ_base={"REMOTE_ADDR": "192.0.2.82"},
+    )
+
+    assert response.status_code == 502
+    assert response.get_json()["error"] == "ERROR: blocked by test"
+
+
+def test_search_uses_existing_rate_limit(monkeypatch):
+    monkeypatch.setattr(app_module, "search_videos", lambda *args: [])
+    client = app.test_client()
+    client_ip = "192.0.2.84"
+
+    for _ in range(app_module.RATE_LIMIT_REQUESTS):
+        response = client.get(
+            "/api/search",
+            query_string={"q": "cats"},
+            environ_base={"REMOTE_ADDR": client_ip},
+        )
+        assert response.status_code == 200
+
+    limited = client.get(
+        "/api/search",
+        query_string={"q": "cats"},
+        environ_base={"REMOTE_ADDR": client_ip},
+    )
+
+    assert limited.status_code == 429
+    assert limited.headers["Retry-After"]
+
+
+def test_info_route_normalizes_plain_video_id(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        app_module,
+        "get_info",
+        lambda url: captured.update(url=url) or {"id": "abcdefghijk", "title": "Example"},
+    )
+
+    response = app.test_client().get(
+        "/api/info",
+        query_string={"id": "abcdefghijk"},
+        environ_base={"REMOTE_ADDR": "192.0.2.83"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["title"] == "Example"
+    assert captured["url"] == "https://www.youtube.com/watch?v=abcdefghijk"
+
+
+def test_status_route_normalizes_plain_video_id(monkeypatch):
+    captured = {}
+    job_key = "normalized-video-job"
+    app_module._jobs[job_key] = {
+        "status": "preparing",
+        "progress": 0,
+        "message": "Preparing video...",
+    }
+
+    def capture_job(url, quality):
+        captured.update(url=url, quality=quality)
+        return job_key
+
+    monkeypatch.setattr(app_module, "_start_job", capture_job)
+    response = app.test_client().get(
+        "/api/status",
+        query_string={"url": "abcdefghijk", "quality": "720"},
+        environ_base={"REMOTE_ADDR": "192.0.2.85"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "url": "https://www.youtube.com/watch?v=abcdefghijk",
+        "quality": 720,
+    }
+
+
 def test_stream_serves_cached_mp4_with_conditional_range(tmp_path, monkeypatch):
     video_file = tmp_path / "abc123_480p.mp4"
     video_file.write_bytes(b"0123456789")
@@ -162,6 +310,26 @@ def test_stream_serves_cached_mp4_with_conditional_range(tmp_path, monkeypatch):
     assert response.headers["Content-Type"].startswith("video/mp4")
     assert response.headers["Content-Range"] == "bytes 2-5/10"
     assert response.headers["Content-Length"] == "4"
+
+
+def test_stream_accepts_full_youtube_url(tmp_path, monkeypatch):
+    video_file = tmp_path / "abcdefghijk_720p.mp4"
+    video_file.write_bytes(b"video")
+    requested = {}
+
+    def fake_cache_path(video_id, quality):
+        requested.update(video_id=video_id, quality=quality)
+        return video_file
+
+    monkeypatch.setattr(app_module, "cache_path", fake_cache_path)
+
+    response = app.test_client().get(
+        "/stream",
+        query_string={"id": "https://www.youtube.com/watch?v=abcdefghijk"},
+    )
+
+    assert response.status_code == 200
+    assert requested == {"video_id": "abcdefghijk", "quality": 720}
 
 
 def test_stream_returns_not_found_before_video_is_ready(tmp_path, monkeypatch):

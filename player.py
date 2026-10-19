@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -16,6 +17,10 @@ QUALITIES = (360, 480, 720)
 CACHE_DIR = Path(__file__).resolve().parent / ".cache"
 CACHE_MAX_AGE_SECONDS = 60 * 60
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+SEARCH_CACHE_TTL_SECONDS = 10 * 60
+_search_cache = {}
+_search_cache_lock = threading.Lock()
 
 
 class PlayerError(Exception):
@@ -41,9 +46,11 @@ class FFmpegNotFoundError(PlayerError):
 def validate_url(url):
     """Return a normalized URL if it points to a supported YouTube host."""
     if not isinstance(url, str) or not url.strip():
-        raise InvalidURLError("Enter a YouTube video URL.")
+        raise InvalidURLError("Enter a YouTube video ID or URL.")
 
     value = url.strip()
+    if VIDEO_ID_PATTERN.fullmatch(value):
+        return f"https://www.youtube.com/watch?v={value}"
     try:
         parsed = urlparse(value)
         hostname = (parsed.hostname or "").lower()
@@ -59,6 +66,113 @@ def validate_url(url):
     ):
         raise InvalidURLError("Enter a valid YouTube video URL.")
     return value
+
+
+def validate_search_query(query):
+    """Validate and return a trimmed YouTube search query."""
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("Enter a search query.")
+    value = query.strip()
+    if len(value) > 200:
+        raise ValueError("Search queries must be 200 characters or fewer.")
+    return value
+
+
+def search_videos(query, limit=12, skip=0):
+    """Search YouTube metadata without downloading media."""
+    query = validate_search_query(query)
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Search limit must be a positive integer.") from error
+    if limit < 1:
+        raise ValueError("Search limit must be a positive integer.")
+    if limit > 96:
+        raise ValueError("Search limit must be 96 or fewer.")
+    try:
+        skip = int(skip)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Search offset must be a non-negative integer.") from error
+    if skip < 0 or skip > limit:
+        raise ValueError("Search offset must be between zero and the search limit.")
+
+    cache_key = (query, limit)
+    now = time.monotonic()
+    reusable_entries = []
+    larger_entries = None
+    with _search_cache_lock:
+        for expired_key, (cached_at, _) in list(_search_cache.items()):
+            if now - cached_at >= SEARCH_CACHE_TTL_SECONDS:
+                del _search_cache[expired_key]
+        cached = _search_cache.get(cache_key)
+        if cached and now - cached[0] < SEARCH_CACHE_TTL_SECONDS:
+            return [dict(video) for video in cached[1][skip:]]
+        larger = [
+            (cached_limit, entries)
+            for (cached_query, cached_limit), (_, entries) in _search_cache.items()
+            if cached_query == query and cached_limit > limit
+        ]
+        if larger:
+            larger_entries = min(larger, key=lambda item: item[0])[1]
+        reusable = [
+            (cached_limit, entries)
+            for (cached_query, cached_limit), (_, entries) in _search_cache.items()
+            if cached_query == query and cached_limit < limit
+        ]
+        if reusable:
+            reusable_entries = [dict(video) for video in max(reusable, key=lambda item: item[0])[1]]
+
+    if larger_entries is not None:
+        return [dict(video) for video in larger_entries[skip:]]
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(options) as downloader:
+            result = downloader.extract_info(f"ytsearch{limit}:{query}", download=False)
+    except DownloadError as error:
+        raise VideoUnavailableError(str(error).strip() or error.__class__.__name__) from error
+    except (OSError, TimeoutError) as error:
+        raise NetworkError(str(error).strip() or error.__class__.__name__) from error
+
+    extracted_videos = []
+    seen_ids = set()
+    for entry in (result or {}).get("entries") or []:
+        if not entry:
+            continue
+        video_id = entry.get("id")
+        if not video_id or video_id in seen_ids:
+            continue
+        seen_ids.add(video_id)
+        extracted_videos.append(
+            {
+                "id": video_id,
+                "title": entry.get("title") or "Untitled video",
+                "channel": entry.get("channel") or entry.get("uploader") or "Unknown channel",
+                "duration": entry.get("duration"),
+                "view_count": entry.get("view_count"),
+                "upload_date": entry.get("upload_date"),
+                "thumbnail": entry.get("thumbnail")
+                or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            }
+        )
+
+    videos = []
+    seen_ids.clear()
+    for video in (*reusable_entries, *extracted_videos):
+        if video["id"] not in seen_ids:
+            seen_ids.add(video["id"])
+            videos.append(video)
+        if len(videos) >= limit:
+            break
+
+    with _search_cache_lock:
+        _search_cache[cache_key] = (time.monotonic(), videos)
+    return [dict(video) for video in videos[skip:]]
 
 
 def normalize_quality(quality):
