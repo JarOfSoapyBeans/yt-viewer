@@ -5,46 +5,164 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YouTube Viewer</title>
   <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; background: #eef1e8; color: #1d2a24; }
+    :root {
+      color-scheme: light;
+      font-family: system-ui, sans-serif;
+      --page: #eef1e8;
+      --page-pattern: #dfe5d9;
+      --surface: #fff;
+      --text: #1d2a24;
+      --muted: #536057;
+      --border: #87948a;
+      --accent: #dc4e37;
+      --button: #1d2a24;
+      --button-text: #fff;
+      --danger: #a52b1c;
+      background: var(--page);
+      color: var(--text);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --page: #171c19;
+      --page-pattern: #252d28;
+      --surface: #242c27;
+      --text: #edf2ee;
+      --muted: #b5c0b8;
+      --border: #67766c;
+      --accent: #f07862;
+      --button: #dce6df;
+      --button-text: #172019;
+      --danger: #ff9585;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root[data-theme="system"] {
+        color-scheme: dark;
+        --page: #171c19;
+        --page-pattern: #252d28;
+        --surface: #242c27;
+        --text: #edf2ee;
+        --muted: #b5c0b8;
+        --border: #67766c;
+        --accent: #f07862;
+        --button: #dce6df;
+        --button-text: #172019;
+        --danger: #ff9585;
+      }
+    }
     [hidden] { display: none !important; }
-    body { margin: 0; min-height: 100vh; background: repeating-linear-gradient(135deg, transparent 0 28px, #dfe5d9 29px 30px); }
-    main { box-sizing: border-box; width: min(100% - 40px, 1120px); margin: 5vh auto; padding: 24px 0; border-top: 5px solid #dc4e37; }
+    *:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    body { margin: 0; min-height: 100vh; background: repeating-linear-gradient(135deg, transparent 0 28px, var(--page-pattern) 29px 30px); color: var(--text); }
+    .sidebar { position: fixed; z-index: 5; inset: 0 auto 0 0; display: flex; box-sizing: border-box; width: 224px; flex-direction: column; gap: 12px; padding: 14px; border-right: 1px solid var(--border); background: var(--surface); transition: width .18s ease; }
+    .sidebar-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .sidebar-brand { color: var(--text); font-weight: 800; text-decoration: none; }
+    .sidebar-toggle, .nav-item { display: flex; align-items: center; gap: 12px; border: 0; background: transparent; color: var(--text); text-align: left; }
+    .sidebar-toggle { min-width: 44px; justify-content: center; padding: 9px; }
+    .nav-list { display: grid; gap: 6px; }
+    .nav-item { width: 100%; justify-content: flex-start; padding: 11px 12px; }
+    .nav-item[aria-current="page"] { background: var(--page-pattern); font-weight: 700; }
+    .nav-item svg, .sidebar-toggle svg { flex: 0 0 22px; width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .sidebar.collapsed { width: 64px; align-items: center; }
+    .sidebar.collapsed .sidebar-brand, .sidebar.collapsed .nav-label { display: none; }
+    .sidebar.collapsed .sidebar-top { flex-direction: column-reverse; }
+    .sidebar.collapsed .nav-item { justify-content: center; padding-inline: 8px; }
+    .mobile-nav { display: none; }
+    main { box-sizing: border-box; width: min(1120px, calc(100% - 264px)); margin: 5vh 20px 5vh calc(224px + max(20px, (100% - 224px - 1120px) / 2)); padding: 24px 0; border-top: 5px solid var(--accent); }
+    body.sidebar-collapsed main { margin-left: calc(64px + max(20px, (100% - 64px - 1120px) / 2)); width: min(1120px, calc(100% - 104px)); }
     h1 { margin: 0 0 24px; font: 700 clamp(2rem, 7vw, 4rem)/1 Georgia, serif; overflow-wrap: anywhere; }
+    h1 a { color: var(--text); text-decoration: none; }
     h2 { margin: 0 0 16px; font-size: clamp(1.35rem, 4vw, 2rem); }
     form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 24px; }
     label { flex-basis: 100%; font-size: .85rem; font-weight: 700; }
-    input, select, button { box-sizing: border-box; min-height: 44px; border: 1px solid #87948a; border-radius: 3px; padding: 10px 12px; font: inherit; }
-    input { flex: 1 1 280px; min-width: 0; background: #fff; }
-    select { background: #fff; }
-    button { background: #1d2a24; color: #fff; cursor: pointer; }
+    input, select, button { box-sizing: border-box; min-height: 44px; border: 1px solid var(--border); border-radius: 3px; padding: 10px 12px; font: inherit; }
+    input { flex: 1 1 280px; min-width: 0; background: var(--surface); color: var(--text); }
+    select { background: var(--surface); color: var(--text); }
+    button { background: var(--button); color: var(--button-text); cursor: pointer; }
     button:disabled { cursor: wait; opacity: .65; }
     #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 20px; }
-    .video-card { display: block; width: 100%; min-width: 0; padding: 0; overflow: hidden; border: 0; border-radius: 5px; background: #fff; color: inherit; text-align: left; box-shadow: 0 2px 8px #1d2a2418; }
-    .video-card:hover { outline: 2px solid #dc4e37; }
-    .thumbnail { position: relative; display: grid; aspect-ratio: 16 / 9; place-items: center; overflow: hidden; background: #dfe5d9; color: #536057; }
+    .video-card { display: block; width: 100%; min-width: 0; padding: 0; overflow: hidden; border: 0; border-radius: 5px; background: var(--surface); color: inherit; text-align: left; box-shadow: 0 2px 8px #1d2a2418; }
+    .video-card:hover { outline: 2px solid var(--accent); }
+    .thumbnail { position: relative; display: grid; aspect-ratio: 16 / 9; place-items: center; overflow: hidden; background: var(--page-pattern); color: var(--muted); }
     .thumbnail img { display: block; width: 100%; height: 100%; object-fit: cover; }
     .thumbnail-fallback { padding: 12px; text-align: center; }
     .duration { position: absolute; right: 7px; bottom: 7px; border-radius: 3px; padding: 2px 5px; background: #101512dd; color: #fff; font-size: .75rem; font-variant-numeric: tabular-nums; }
     .card-copy { padding: 11px 12px 13px; }
     .card-title { display: -webkit-box; min-height: 2.8em; margin: 0 0 7px; overflow: hidden; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-    .channel, .details { margin: 0; overflow: hidden; color: #536057; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
+    .channel, .details { margin: 0; overflow: hidden; color: var(--muted); font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
     .details { margin-top: 3px; font-size: .75rem; }
     #load-more { display: block; min-width: 140px; margin: 24px auto 0; }
-    #more-results-message { margin: 14px 0 0; color: #536057; font-size: .85rem; text-align: center; }
+    #more-results-message { margin: 14px 0 0; color: var(--muted); font-size: .85rem; text-align: center; }
+    .history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: -8px 0 22px; }
+    .history-controls label { flex-basis: auto; display: flex; align-items: center; gap: 7px; }
+    .history-controls input { flex: 0 0 auto; min-height: 0; }
+    .history-controls button, .chip-remove, .watched-remove { min-height: 34px; padding: 5px 10px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 24px; }
+    .search-chip { display: flex; align-items: center; gap: 4px; overflow: hidden; border: 1px solid var(--border); border-radius: 3px; background: var(--surface); }
+    .chip-search, .chip-remove { min-height: 36px; border: 0; border-radius: 0; background: transparent; color: var(--text); }
+    .chip-search { max-width: min(70vw, 260px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chips > .chip-search { border: 1px solid var(--border); border-radius: 3px; background: var(--surface); }
+    .chip-remove { padding-inline: 9px; color: var(--muted); }
+    .feed-row { margin: 24px 0; }
+    .feed-row h2 { margin-bottom: 12px; font-size: 1.25rem; }
+    .feed-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr)); gap: 14px; }
+    .feed-grid .skeleton { min-height: 190px; }
+    .watched-item { position: relative; min-width: 0; }
+    .watched-remove { position: absolute; z-index: 1; top: 7px; right: 7px; min-width: 34px; border: 0; border-radius: 50%; background: #101512dd; color: #fff; }
+    .feed-show-more { display: block; min-width: 140px; margin: 20px auto 0; }
+    #welcome { margin: 28px 0; }
+    #welcome p { color: var(--muted); }
+    .view-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+    .view-heading h2 { margin: 0; }
+    .history-tabs { display: flex; gap: 8px; margin: 20px 0; border-bottom: 1px solid var(--border); }
+    .history-tab { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--text); }
+    .history-tab[aria-selected="true"] { border-bottom-color: var(--accent); font-weight: 700; }
+    .history-list { display: grid; gap: 10px; }
+    .history-group { margin: 24px 0 10px; font-size: 1.1rem; }
+    .history-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px; border-radius: 5px; background: var(--surface); box-shadow: 0 2px 8px #1d2a2418; }
+    .history-open { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 14px; border: 0; background: transparent; color: var(--text); text-align: left; }
+    .history-copy { display: grid; gap: 4px; min-width: 0; }
+    .history-title { overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .history-meta { color: var(--muted); font-size: .85rem; }
+    .history-remove { min-width: 44px; padding-inline: 10px; }
+    .empty-state { margin: 26px 0; padding: 22px; border-radius: 5px; background: var(--surface); color: var(--muted); }
+    .settings-section { margin: 22px 0; padding: 18px; border-radius: 5px; background: var(--surface); }
+    .settings-section h3 { margin: 0 0 14px; }
+    .setting-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; }
+    .setting-row label { flex: 1 1 240px; }
+    .setting-row input[type="checkbox"] { flex: 0 0 auto; min-height: 0; width: 20px; height: 20px; }
+    .settings-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .privacy-note { color: var(--muted); }
+    .panel-backdrop { position: fixed; z-index: 6; inset: 0 0 0 224px; border: 0; border-radius: 0; background: #0007; }
+    .side-panel { position: fixed; z-index: 7; inset: 0 auto 0 224px; box-sizing: border-box; width: min(460px, calc(100vw - 224px)); overflow-y: auto; padding: 22px; border-right: 1px solid var(--border); background: var(--surface); box-shadow: 8px 0 30px #0002; transform: translateX(calc(-100% - 8px)); transition: transform .2s ease, left .18s ease; }
+    body.panel-open .side-panel:not([hidden]) { transform: translateX(0); }
+    body.sidebar-collapsed .side-panel { left: 64px; width: min(460px, calc(100vw - 64px)); }
+    body.sidebar-collapsed .panel-backdrop { left: 64px; }
+    .side-panel[hidden] { display: block !important; visibility: hidden; pointer-events: none; }
+    .side-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    .side-panel-header h2 { margin: 0; }
+    .icon-button { display: inline-grid; flex: 0 0 auto; min-width: 44px; place-items: center; padding: 8px; }
+    .icon-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+    .side-panel label { display: block; margin: 12px 0 6px; }
+    .side-panel input[type="search"] { width: 100%; }
+    .side-panel .settings-section { margin: 14px 0; padding: 14px; }
+    .side-panel .setting-row label { margin: 0; }
+    .side-panel .history-entry { box-shadow: none; }
     .spinner { display: inline-block; width: 14px; height: 14px; margin-left: 7px; border: 2px solid #ffffff70; border-top-color: #fff; border-radius: 50%; vertical-align: -3px; animation: spin .7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     #search-message, #player-message { margin: 20px 0; }
-    [role="alert"] { color: #a52b1c; }
+    [role="alert"] { color: var(--danger); }
     #player-view { max-width: 960px; }
     #player-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
     #player-controls label { flex: 0 0 auto; }
     #video-player { display: block; width: 100%; aspect-ratio: 16 / 9; background: #101512; object-fit: contain; }
     #preparing { display: grid; gap: 10px; max-width: 480px; margin: 24px 0; }
-    progress { width: 100%; height: 12px; accent-color: #dc4e37; }
-    .skeleton { min-height: 230px; border-radius: 5px; background: linear-gradient(100deg, #dfe5d9 30%, #f7f8f4 50%, #dfe5d9 70%); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
+    progress { width: 100%; height: 12px; accent-color: var(--accent); }
+    .skeleton { min-height: 230px; border-radius: 5px; background: linear-gradient(100deg, var(--page-pattern) 30%, var(--surface) 50%, var(--page-pattern) 70%); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
     @keyframes shimmer { to { background-position-x: -200%; } }
     @media (max-width: 480px) {
-      main { width: min(100% - 28px, 1120px); margin-top: 20px; }
+      .sidebar { display: none; }
+      .mobile-nav { position: fixed; z-index: 12; inset: auto 0 0; display: grid; grid-template-columns: repeat(3, 1fr); padding: 5px 8px max(5px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--surface); }
+      .mobile-nav .nav-item { display: grid; justify-items: center; gap: 2px; min-height: 56px; padding: 5px; font-size: .75rem; text-align: center; }
+      main, body.sidebar-collapsed main { width: min(100% - 28px, 1120px); margin: 20px auto 90px; }
       form button { flex: 1; }
       #results { grid-template-columns: 1fr; gap: 14px; }
       .video-card { display: grid; grid-template-columns: minmax(120px, 42%) 1fr; }
@@ -52,25 +170,145 @@
       .card-copy { align-self: center; padding: 9px; }
       .card-title { min-height: 0; }
       #player-controls label { flex-basis: auto; }
+      .history-entry { gap: 4px; padding: 7px; }
+      .panel-backdrop { z-index: 10; inset: 0 0 70px; }
+      .side-panel, body.sidebar-collapsed .side-panel { z-index: 11; inset: auto 0 70px; width: 100%; max-height: min(78vh, 720px); padding: 18px 16px max(18px, env(safe-area-inset-bottom)); border: 1px solid var(--border); border-radius: 16px 16px 0 0; box-shadow: 0 -8px 30px #0003; transform: translateY(110%); transition: transform .2s ease; }
+      body.panel-open .side-panel:not([hidden]) { transform: translateY(0); }
+      .side-panel[hidden] { display: block !important; }
     }
     @media (prefers-reduced-motion: reduce) { .skeleton, .spinner { animation: none; } }
   </style>
 </head>
 <body>
+  <aside id="sidebar" class="sidebar" aria-label="Main navigation">
+    <div class="sidebar-top">
+      <a class="sidebar-brand" href="/" aria-label="YouTube Viewer home">YT Viewer</a>
+      <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Collapse navigation" aria-expanded="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+      </button>
+    </div>
+    <nav class="nav-list">
+      <button class="nav-item" type="button" data-view="home" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"></path></svg><span class="nav-label">Home</span>
+      </button>
+      <button class="nav-item" type="button" data-view="history">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"></path><path d="M3 3v5h5M12 7v5l3 2"></path></svg><span class="nav-label">History</span>
+      </button>
+      <button class="nav-item" type="button" data-view="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"></path><path d="m19.4 15 .1.1 1.2.9-1.2 2.1-1.4-.6a8 8 0 0 1-1.5.9l-.2 1.5h-2.4l-.2-1.5a8 8 0 0 1-1.5-.9l-1.4.6-1.2-2.1 1.2-.9a8 8 0 0 1 0-1.8l-1.2-.9 1.2-2.1 1.4.6a8 8 0 0 1 1.5-.9l.2-1.5h2.4l.2 1.5a8 8 0 0 1 1.5.9l1.4-.6 1.2 2.1-1.2.9a8 8 0 0 1-.1 1.7z" transform="translate(-1 -1)"></path></svg><span class="nav-label">Settings</span>
+      </button>
+    </nav>
+  </aside>
+  <nav class="mobile-nav" aria-label="Main navigation">
+    <button class="nav-item" type="button" data-view="home" aria-current="page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"></path></svg><span>Home</span>
+    </button>
+    <button class="nav-item" type="button" data-view="history">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"></path><path d="M3 3v5h5M12 7v5l3 2"></path></svg><span>History</span>
+    </button>
+    <button class="nav-item" type="button" data-view="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"></path><path d="m19.4 15 .1.1 1.2.9-1.2 2.1-1.4-.6a8 8 0 0 1-1.5.9l-.2 1.5h-2.4l-.2-1.5a8 8 0 0 1-1.5-.9l-1.4.6-1.2-2.1 1.2-.9a8 8 0 0 1 0-1.8l-1.2-.9 1.2-2.1 1.4.6a8 8 0 0 1 1.5-.9l.2-1.5h2.4l.2 1.5a8 8 0 0 1 1.5.9l1.4-.6 1.2 2.1-1.2.9a8 8 0 0 1-.1 1.7z" transform="translate(-1 -1)"></path></svg><span>Settings</span>
+    </button>
+  </nav>
+  <button id="panel-backdrop" class="panel-backdrop" type="button" aria-label="Close panel" hidden></button>
   <main>
-    <h1 id="page-title">YouTube Viewer</h1>
+    <h1 id="page-title"><a href="/" aria-label="YouTube Viewer home">YouTube Viewer</a></h1>
     {% if ffmpeg_warning %}<p role="alert">{{ ffmpeg_warning }}</p>{% endif %}
     {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+    <form id="search-form">
+      <label for="search-query">Search YouTube videos</label>
+      <input id="search-query" name="q" type="search" autocomplete="off" placeholder="Search videos or paste a YouTube link">
+      <button id="search-submit" type="submit">Search</button>
+    </form>
+    <p id="search-message" aria-live="polite" hidden></p>
     <section id="search-view" {% if watching %}hidden{% endif %}>
-      <form id="search-form">
-        <label for="search-query">Search YouTube videos</label>
-        <input id="search-query" name="q" type="search" autocomplete="off" placeholder="Search videos or paste a YouTube link">
-        <button id="search-submit" type="submit">Search</button>
-      </form>
-      <p id="search-message" aria-live="polite" hidden></p>
+      <div id="home-feed" hidden>
+        <div class="history-controls">
+          <label><input id="pause-history-home" type="checkbox"> Pause history</label>
+          <button id="clear-history-home" type="button">Clear history</button>
+        </div>
+        <div id="recent-searches" class="chips" aria-label="Recent searches"></div>
+        <div id="welcome" hidden>
+          <h2>Welcome to YouTube Viewer</h2>
+          <p>Search for something to get recommendations based on what you watch.</p>
+          <div id="starter-topics" class="chips"></div>
+        </div>
+        <section id="because-rows"></section>
+        <section id="watched-row" class="feed-row" hidden></section>
+        <section id="recommended-row" class="feed-row" hidden>
+          <h2>Recommended for you</h2>
+          <div id="recommended-grid" class="feed-grid"></div>
+          <button id="feed-show-more" class="feed-show-more" type="button" hidden>Show more</button>
+        </section>
+      </div>
       <div id="results" aria-live="polite"></div>
       <button id="load-more" type="button" hidden>Show more<span id="more-spinner" class="spinner" aria-hidden="true" hidden></span></button>
       <p id="more-results-message" aria-live="polite" hidden>No more results</p>
+    </section>
+    <section id="history-view" class="side-panel" role="dialog" aria-labelledby="history-title" tabindex="-1" hidden>
+      <div class="side-panel-header">
+        <h2 id="history-title">History</h2>
+        <div class="settings-actions">
+          <button id="history-clear-all" type="button">Clear all</button>
+          <button id="history-close" class="icon-button" type="button" aria-label="Close History panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+          </button>
+        </div>
+      </div>
+      <div class="history-tabs" role="tablist" aria-label="History type">
+        <button id="watched-tab" class="history-tab" type="button" role="tab" aria-selected="true" aria-controls="watched-panel">Watched</button>
+        <button id="searches-tab" class="history-tab" type="button" role="tab" aria-selected="false" aria-controls="searches-panel">Searches</button>
+      </div>
+      <label for="history-filter">Filter history</label>
+      <input id="history-filter" type="search" autocomplete="off" placeholder="Filter by title, channel, or query">
+      <div id="watched-panel" role="tabpanel" aria-labelledby="watched-tab"></div>
+      <div id="searches-panel" role="tabpanel" aria-labelledby="searches-tab" hidden></div>
+    </section>
+    <section id="settings-view" class="side-panel" role="dialog" aria-labelledby="settings-title" tabindex="-1" hidden>
+      <div class="side-panel-header">
+        <h2 id="settings-title">Settings</h2>
+        <button id="settings-close" class="icon-button" type="button" aria-label="Close Settings panel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+        </button>
+      </div>
+      <section class="settings-section">
+        <h3>Appearance</h3>
+        <div class="setting-row"><label for="setting-theme">Theme</label><select id="setting-theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></div>
+      </section>
+      <section class="settings-section">
+        <h3>Playback</h3>
+        <div class="setting-row"><label for="setting-quality">Default quality</label><select id="setting-quality"><option value="360">360p</option><option value="480">480p</option><option value="720">720p</option></select></div>
+        <div class="setting-row"><label for="setting-autoplay">Autoplay videos</label><input id="setting-autoplay" type="checkbox"></div>
+      </section>
+      <section class="settings-section">
+        <h3>Results</h3>
+        <div class="setting-row"><label for="setting-batch-size">Results per “Show more”</label><select id="setting-batch-size"><option value="12">12</option><option value="24">24</option><option value="36">36</option></select></div>
+      </section>
+      <section class="settings-section">
+        <h3>Home page</h3>
+        <div class="setting-row"><label for="setting-recommendations">Show recommendations</label><input id="setting-recommendations" type="checkbox"></div>
+        <div class="setting-row"><label for="setting-feed-search-count">Recent searches for recommendations</label><select id="setting-feed-search-count"><option value="3">3</option><option value="5">5</option><option value="10">10</option></select></div>
+      </section>
+      <section class="settings-section">
+        <h3>Privacy</h3>
+        <div class="setting-row"><label for="pause-history-settings">Pause history</label><input id="pause-history-settings" type="checkbox"></div>
+        <div class="settings-actions">
+          <button id="clear-watched" type="button">Clear watched history</button>
+          <button id="clear-searches" type="button">Clear searches</button>
+          <button id="clear-everything" type="button">Clear everything</button>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3>Data</h3>
+        <div class="settings-actions">
+          <button id="export-data" type="button">Export my data</button>
+          <button id="import-data-button" type="button">Import</button>
+          <input id="import-data" type="file" accept="application/json,.json" hidden>
+        </div>
+        <p class="privacy-note">Your history and settings are stored only in this browser.</p>
+      </section>
+      <p id="settings-message" aria-live="polite" hidden></p>
+      <button id="reset-settings" type="button">Reset to defaults</button>
     </section>
     <section id="player-view" {% if not watching %}hidden{% endif %}>
       <button id="back-to-results" type="button">Back to results</button>
@@ -119,15 +357,363 @@
     let currentVideoId = '';
     let statusTimer = null;
     let searchSequence = 0;
+    let feedSequence = 0;
+    const HISTORY_KEY = 'yt-viewer-history-v1';
+    const FEED_KEY = 'yt-viewer-feed-v1';
+    const SETTINGS_KEY = 'yt-viewer-settings-v1';
+    const SIDEBAR_KEY = 'yt-viewer-sidebar-collapsed-v1';
+    const homeFeed = document.getElementById('home-feed');
+    const recentSearchesElement = document.getElementById('recent-searches');
+    const welcomeElement = document.getElementById('welcome');
+    const starterTopicsElement = document.getElementById('starter-topics');
+    const becauseRowsElement = document.getElementById('because-rows');
+    const watchedRowElement = document.getElementById('watched-row');
+    const recommendedRowElement = document.getElementById('recommended-row');
+    const recommendedGrid = document.getElementById('recommended-grid');
+    const feedShowMoreButton = document.getElementById('feed-show-more');
+    const pauseHistoryHome = document.getElementById('pause-history-home');
+    const pauseHistorySettings = document.getElementById('pause-history-settings');
+    let displayedFeedItems = [];
+    let displayedFeedCount = 24;
+    let homeScrollY = 0;
+    let historyPaused = false;
+    let settings = {
+      theme: 'system',
+      quality: '720',
+      autoplay: false,
+      batchSize: 12,
+      recommendations: true,
+      feedSearchCount: 5
+    };
+    let activeView = 'home';
+    let openPanel = '';
+    let panelOpener = null;
+    let historyTab = 'watched';
 
-    function updateUrl(query, videoId = '', replace = false) {
+    const storage = {
+      get(key, fallback, session = false) {
+        try {
+          const source = session ? window.sessionStorage : window.localStorage;
+          const value = source.getItem(key);
+          return value === null ? fallback : JSON.parse(value);
+        } catch (_) {
+          return fallback;
+        }
+      },
+      set(key, value, session = false) {
+        try {
+          const target = session ? window.sessionStorage : window.localStorage;
+          target.setItem(key, JSON.stringify(value));
+          return true;
+        } catch (_) {
+          return false;
+        }
+      },
+      remove(key, session = false) {
+        try {
+          const target = session ? window.sessionStorage : window.localStorage;
+          target.removeItem(key);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+    };
+
+    function readHistory() {
+      const value = storage.get(HISTORY_KEY, {}) || {};
+      const searches = [];
+      for (const entry of Array.isArray(value.searches) ? value.searches : []) {
+        const query = typeof entry === 'string' ? entry : entry && entry.query;
+        if (typeof query !== 'string') continue;
+        const normalized = query.trim().toLowerCase();
+        if (!normalized || searches.some((item) => item.query === normalized)) continue;
+        searches.push({
+          query: normalized,
+          searchedAt: typeof entry === 'object' && Number.isFinite(entry.searchedAt) ? entry.searchedAt : Date.now()
+        });
+        if (searches.length === 100) break;
+      }
+      const watched = [];
+      for (const item of Array.isArray(value.watched) ? value.watched : []) {
+        if (!item || !item.id || watched.some((videoItem) => videoItem.id === item.id)) continue;
+        watched.push({ ...item, watchedAt: Number.isFinite(item.watchedAt) ? item.watchedAt : Date.now() });
+        if (watched.length === 200) break;
+      }
+      return { searches, watched };
+    }
+
+    function writeHistory(value) {
+      storage.set(HISTORY_KEY, value);
+    }
+
+    function isHistoryPaused() {
+      return historyPaused;
+    }
+
+    function readFeedCache() {
+      const cache = storage.get(FEED_KEY, null, true);
+      return cache && Date.now() - cache.builtAt < 10 * 60 * 1000 ? cache : null;
+    }
+
+    function writeFeedCache(cache) {
+      storage.set(FEED_KEY, cache, true);
+    }
+
+    function addSearchToHistory(query) {
+      if (isHistoryPaused()) return;
+      const normalized = query.trim().toLowerCase();
+      if (!normalized) return;
+      const historyData = readHistory();
+      historyData.searches = [
+        { query: normalized, searchedAt: Date.now() },
+        ...historyData.searches.filter((item) => item.query !== normalized)
+      ].slice(0, 100);
+      writeHistory(historyData);
+    }
+
+    function addVideoToHistory(item) {
+      if (isHistoryPaused() || !item || !item.id) return;
+      const historyData = readHistory();
+      historyData.watched = [
+        {
+          id: item.id,
+          title: item.title || 'Untitled video',
+          channel: item.channel || 'Unknown channel',
+          thumbnail: item.thumbnail || `https://i.ytimg.com/vi/${encodeURIComponent(item.id)}/hqdefault.jpg`,
+          duration: item.duration,
+          view_count: item.view_count,
+          upload_date: item.upload_date,
+          watchedAt: Date.now()
+        },
+        ...historyData.watched.filter((videoItem) => videoItem.id !== item.id)
+      ].slice(0, 200);
+      writeHistory(historyData);
+    }
+
+    function updateUrl(query, videoId = '', replace = false, view = '') {
       const url = new URL(window.location.href);
       if (query) url.searchParams.set('q', query);
       else url.searchParams.delete('q');
       if (videoId) url.searchParams.set('video', videoId);
       else url.searchParams.delete('video');
+      if (view === 'history' || view === 'settings') url.searchParams.set('view', view);
+      else url.searchParams.delete('view');
       const method = replace ? 'replaceState' : 'pushState';
-      history[method]({ view: videoId ? 'player' : 'results', query, videoId }, '', url);
+      if (!videoId) url.searchParams.delete('quality');
+      if (view !== 'history') url.searchParams.delete('tab');
+      history[method]({ view: videoId ? 'player' : (view || (query ? 'results' : 'home')), query, videoId }, '', url);
+    }
+
+    function normalizeSettings(value = {}) {
+      if (!value || typeof value !== 'object') value = {};
+      return {
+        theme: ['light', 'dark', 'system'].includes(value.theme) ? value.theme : 'system',
+        quality: ['360', '480', '720'].includes(String(value.quality)) ? String(value.quality) : '720',
+        autoplay: value.autoplay === true,
+        batchSize: [12, 24, 36].includes(Number(value.batchSize)) ? Number(value.batchSize) : 12,
+        recommendations: value.recommendations !== false,
+        feedSearchCount: [3, 5, 10].includes(Number(value.feedSearchCount)) ? Number(value.feedSearchCount) : 5,
+        pauseHistory: value.pauseHistory === true
+      };
+    }
+
+    function applySettings() {
+      document.documentElement.dataset.theme = settings.theme;
+      document.getElementById('setting-theme').value = settings.theme;
+      document.getElementById('setting-quality').value = settings.quality;
+      document.getElementById('setting-autoplay').checked = settings.autoplay;
+      document.getElementById('setting-batch-size').value = String(settings.batchSize);
+      document.getElementById('setting-recommendations').checked = settings.recommendations;
+      document.getElementById('setting-feed-search-count').value = String(settings.feedSearchCount);
+      pauseHistoryHome.checked = historyPaused;
+      pauseHistorySettings.checked = historyPaused;
+    }
+
+    function saveSettings(patch) {
+      settings = normalizeSettings({ ...settings, ...patch });
+      if (Object.prototype.hasOwnProperty.call(patch, 'pauseHistory')) historyPaused = settings.pauseHistory;
+      storage.set(SETTINGS_KEY, settings);
+      applySettings();
+      if (Object.prototype.hasOwnProperty.call(patch, 'quality')) {
+        qualitySelect.value = settings.quality;
+        if (currentVideoId && !playerView.hidden) {
+          const url = new URL(window.location.href);
+          url.searchParams.set('quality', settings.quality);
+          history.replaceState({ ...(history.state || {}), view: 'player' }, '', url);
+          startPlayback(currentVideoId, settings.quality);
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'theme')) document.documentElement.dataset.theme = settings.theme;
+      if (Object.prototype.hasOwnProperty.call(patch, 'recommendations') ||
+          Object.prototype.hasOwnProperty.call(patch, 'feedSearchCount')) {
+        if (activeView === 'home' && !currentQuery && !new URL(window.location.href).searchParams.has('video')) {
+          loadHomeFeed(true);
+        }
+      }
+    }
+
+    function loadSettings() {
+      const saved = storage.get(SETTINGS_KEY, {});
+      const legacyPause = storage.get('yt-viewer-history-paused-v1', false);
+      settings = normalizeSettings(saved);
+      historyPaused = typeof saved.pauseHistory === 'boolean' ? saved.pauseHistory : legacyPause === true;
+      settings.pauseHistory = historyPaused;
+      storage.remove('yt-viewer-history-paused-v1');
+      writeHistory(readHistory());
+      applySettings();
+      qualitySelect.value = settings.quality;
+    }
+
+    function setActiveNavigation(view) {
+      for (const item of document.querySelectorAll('.nav-item[data-view]')) {
+        if (item.dataset.view === view) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+      }
+    }
+
+    function renderPageView(view, restoreScroll = false) {
+      if (view === 'home') {
+        closePanel(false, false);
+        activeView = 'home';
+        setActiveNavigation('home');
+        searchMessage.hidden = true;
+        const url = new URL(window.location.href);
+        const query = url.searchParams.get('q') || '';
+        const playerId = url.searchParams.get('video');
+        url.pathname = '/';
+        url.search = '';
+        history.replaceState({ view: 'home' }, '', url);
+        if (playerId || !query) {
+          currentQuery = '';
+          searchInput.value = '';
+          playerView.hidden = true;
+          video.pause();
+          if (statusTimer) window.clearTimeout(statusTimer);
+          loadHomeFeed(restoreScroll);
+        } else {
+          showResults(query, restoreScroll);
+        }
+        return;
+      }
+      openPanelView(view, null, false);
+    }
+
+    function navigateView(view, replace = false, opener = null) {
+      if (!['home', 'history', 'settings'].includes(view)) return;
+      if (view === 'home') {
+        closePanel(false, false);
+        renderPageView('home');
+        return;
+      }
+      if (openPanel === view) {
+        closePanel(true);
+        return;
+      }
+      const trigger = opener || document.querySelector(`.nav-item[data-view="${view}"]`);
+      openPanelView(view, trigger, !replace);
+    }
+
+    function openPanelView(view, opener, pushState = true) {
+      if (!['history', 'settings'].includes(view)) return;
+      if (activeView === 'home' && currentQuery) saveCurrentResults();
+      if (openPanel && openPanel !== view) {
+        const previousPanel = document.getElementById(`${openPanel}-view`);
+        previousPanel.hidden = true;
+        previousPanel.setAttribute('aria-modal', 'false');
+      }
+      openPanel = view;
+      panelOpener = opener || document.querySelector(`.nav-item[data-view="${view}"]`);
+      const url = new URL(window.location.href);
+      url.pathname = '/';
+      url.searchParams.delete('view');
+      url.searchParams.delete('tab');
+      url.searchParams.set('view', view);
+      if (view === 'history' && historyTab === 'searches') url.searchParams.set('tab', historyTab);
+      const method = pushState ? 'pushState' : 'replaceState';
+      history[method]({ ...(history.state || {}), panel: view }, '', url);
+      document.body.classList.add('panel-open');
+      document.getElementById('panel-backdrop').hidden = false;
+      const panel = document.getElementById(`${view}-view`);
+      panel.hidden = false;
+      panel.setAttribute('aria-modal', 'true');
+      if (view === 'history') {
+        const tab = new URL(window.location.href).searchParams.get('tab');
+        historyTab = tab === 'searches' ? 'searches' : 'watched';
+        renderHistoryView();
+        document.getElementById('history-filter').focus();
+      } else {
+        applySettings();
+        panel.querySelector('select, input, button')?.focus();
+      }
+      setActiveNavigation(view);
+    }
+
+    function closePanel(updateUrl = true, restoreFocus = true) {
+      if (!openPanel) return;
+      const panel = document.getElementById(`${openPanel}-view`);
+      panel.hidden = true;
+      panel.setAttribute('aria-modal', 'false');
+      openPanel = '';
+      document.body.classList.remove('panel-open');
+      document.getElementById('panel-backdrop').hidden = true;
+      const url = new URL(window.location.href);
+      if (updateUrl && (url.searchParams.get('view') === 'history' || url.searchParams.get('view') === 'settings')) {
+        url.searchParams.delete('view');
+        url.searchParams.delete('tab');
+        history.replaceState({ ...(history.state || {}), panel: '' }, '', url);
+      }
+      setActiveNavigation('home');
+      const target = panelOpener;
+      panelOpener = null;
+      if (restoreFocus) {
+        const visibleTarget = target && target.isConnected && target.getClientRects().length
+          ? target
+          : Array.from(document.querySelectorAll('.nav-item[data-view="home"]')).find((item) => item.getClientRects().length);
+        visibleTarget?.focus();
+      }
+    }
+
+    function trapPanelFocus(event) {
+      if (!openPanel) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closePanel(true);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const panel = document.getElementById(`${openPanel}-view`);
+      const focusable = Array.from(panel.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]):not([type="file"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )).filter((element) => !element.closest('[hidden]') &&
+        element.getAttribute('aria-hidden') !== 'true' && element.getClientRects().length > 0);
+      if (!focusable.length) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    function setHistoryTab(tab, updateUrl = true) {
+      historyTab = tab === 'searches' ? 'searches' : 'watched';
+      if (updateUrl) {
+        const url = new URL(window.location.href);
+        url.pathname = '/';
+        url.searchParams.set('view', 'history');
+        if (historyTab === 'searches') url.searchParams.set('tab', historyTab);
+        else url.searchParams.delete('tab');
+        history.replaceState({ ...(history.state || {}), panel: 'history', tab: historyTab }, '', url);
+      }
+      renderHistoryView();
     }
 
     function formatViews(value) {
@@ -211,8 +797,453 @@
       details.textContent = `${formatViews(item.view_count)} - ${formatDate(item.upload_date)}`;
       copy.append(title, channel, details);
       card.append(thumbnail, copy);
-      card.addEventListener('click', () => openVideo(item.id, item.title));
+      card.addEventListener('click', () => {
+        openVideo(item.id, item.title, false, item);
+      });
       return card;
+    }
+
+    function renderSearchChips(searches) {
+      recentSearchesElement.replaceChildren();
+      recentSearchesElement.hidden = searches.length === 0;
+      for (const entry of searches) {
+        const query = entry.query;
+        const group = document.createElement('span');
+        group.className = 'search-chip';
+        const searchChip = document.createElement('button');
+        searchChip.type = 'button';
+        searchChip.className = 'chip-search';
+        searchChip.textContent = query;
+        searchChip.addEventListener('click', () => beginSearch(query));
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'chip-remove';
+        remove.textContent = 'x';
+        remove.setAttribute('aria-label', `Remove ${query} from search history`);
+        remove.addEventListener('click', () => {
+          const historyData = readHistory();
+          historyData.searches = historyData.searches.filter((value) => value.query !== query);
+          writeHistory(historyData);
+          loadHomeFeed();
+        });
+        group.append(searchChip, remove);
+        recentSearchesElement.append(group);
+      }
+    }
+
+    function renderWatchedRow() {
+      const watched = readHistory().watched.slice(0, 10);
+      watchedRowElement.replaceChildren();
+      watchedRowElement.hidden = watched.length === 0;
+      if (!watched.length) return;
+      const heading = document.createElement('h2');
+      heading.textContent = 'Recently watched';
+      const grid = document.createElement('div');
+      grid.className = 'feed-grid';
+      for (const item of watched) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'watched-item';
+        const card = makeCard(item);
+        card._videoData = item;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'watched-remove';
+        remove.textContent = 'x';
+        remove.setAttribute('aria-label', `Remove ${item.title || 'video'} from watch history`);
+        remove.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const historyData = readHistory();
+          historyData.watched = historyData.watched.filter((videoItem) => videoItem.id !== item.id);
+          writeHistory(historyData);
+          loadHomeFeed();
+        });
+        wrapper.append(card, remove);
+        grid.append(wrapper);
+      }
+      watchedRowElement.append(heading, grid);
+    }
+
+    function renderHomeHistory() {
+      const historyData = readHistory();
+      renderSearchChips(historyData.searches);
+      renderWatchedRow();
+      welcomeElement.hidden = historyData.searches.length > 0 || historyData.watched.length > 0;
+      starterTopicsElement.replaceChildren();
+      if (!welcomeElement.hidden) {
+        for (const topic of ['music', 'science', 'cooking', 'gaming', 'news']) {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'chip-search';
+          chip.textContent = topic;
+          chip.addEventListener('click', () => beginSearch(topic));
+          starterTopicsElement.append(chip);
+        }
+      }
+      return historyData;
+    }
+
+    function formatWatchedTime(timestamp) {
+      if (!Number.isFinite(timestamp)) return 'Time unknown';
+      return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
+    }
+
+    function watchedGroup(timestamp) {
+      const now = new Date();
+      const watched = new Date(timestamp);
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const watchedDay = new Date(watched.getFullYear(), watched.getMonth(), watched.getDate());
+      const daysAgo = (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) -
+        Date.UTC(watchedDay.getFullYear(), watchedDay.getMonth(), watchedDay.getDate())) / 86400000;
+      if (daysAgo === 0) return 'Today';
+      if (daysAgo === 1) return 'Yesterday';
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+      if (watchedDay >= startOfWeek) return 'This week';
+      return 'Earlier';
+    }
+
+    function renderHistoryView() {
+      const historyData = readHistory();
+      const filter = document.getElementById('history-filter').value.trim().toLowerCase();
+      const watchedPanel = document.getElementById('watched-panel');
+      const searchesPanel = document.getElementById('searches-panel');
+      watchedPanel.hidden = historyTab !== 'watched';
+      searchesPanel.hidden = historyTab !== 'searches';
+      document.getElementById('watched-tab').setAttribute('aria-selected', String(historyTab === 'watched'));
+      document.getElementById('searches-tab').setAttribute('aria-selected', String(historyTab === 'searches'));
+
+      if (historyTab === 'watched') {
+        watchedPanel.replaceChildren();
+        const groups = new Map();
+        const sorted = [...historyData.watched].sort((a, b) => b.watchedAt - a.watchedAt);
+        for (const item of sorted) {
+          if (filter && !`${item.title || ''} ${item.channel || ''}`.toLowerCase().includes(filter)) continue;
+          const group = watchedGroup(item.watchedAt);
+          if (!groups.has(group)) groups.set(group, []);
+          groups.get(group).push(item);
+        }
+        for (const label of ['Today', 'Yesterday', 'This week', 'Earlier']) {
+          const items = groups.get(label) || [];
+          if (!items.length) continue;
+          const heading = document.createElement('h3');
+          heading.className = 'history-group';
+          heading.textContent = label;
+          watchedPanel.append(heading);
+          for (const item of items) {
+            const row = document.createElement('div');
+            row.className = 'history-entry';
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'history-open';
+            open.setAttribute('aria-label', `Play ${item.title || 'video'} watched ${formatWatchedTime(item.watchedAt)}`);
+            const copy = document.createElement('span');
+            copy.className = 'history-copy';
+            const title = document.createElement('span');
+            title.className = 'history-title';
+            title.textContent = item.title || 'Untitled video';
+            const channel = document.createElement('span');
+            channel.className = 'history-meta';
+            channel.textContent = item.channel || 'Unknown channel';
+            const watchedAt = document.createElement('span');
+            watchedAt.className = 'history-meta';
+            watchedAt.textContent = formatWatchedTime(item.watchedAt);
+            copy.append(title, channel, watchedAt);
+            open.append(copy);
+            open.addEventListener('click', () => {
+              closePanel(true, false);
+              openVideo(item.id, item.title, false, item);
+            });
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'history-remove';
+            remove.textContent = '×';
+            remove.setAttribute('aria-label', `Remove ${item.title || 'video'} from history`);
+            remove.addEventListener('click', () => {
+              const updated = readHistory();
+              updated.watched = updated.watched.filter((videoItem) => videoItem.id !== item.id);
+              writeHistory(updated);
+              refreshHistoryViews();
+            });
+            row.append(open, remove);
+            watchedPanel.append(row);
+          }
+        }
+        if (!watchedPanel.children.length) {
+          const empty = document.createElement('p');
+          empty.className = 'empty-state';
+          empty.textContent = filter ? 'No watched videos match your filter.' : 'Videos you open will appear here.';
+          watchedPanel.append(empty);
+        }
+      } else {
+        searchesPanel.replaceChildren();
+        const matching = historyData.searches.filter((entry) => !filter || entry.query.includes(filter));
+        if (!matching.length) {
+          const empty = document.createElement('p');
+          empty.className = 'empty-state';
+          empty.textContent = filter ? 'No searches match your filter.' : 'Your recent searches will appear here.';
+          searchesPanel.append(empty);
+        } else {
+          const list = document.createElement('div');
+          list.className = 'history-list';
+          for (const entry of matching) {
+            const row = document.createElement('div');
+            row.className = 'history-entry';
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'history-open';
+            open.style.gridTemplateColumns = 'minmax(0, 1fr)';
+            open.setAttribute('aria-label', `Search for ${entry.query}`);
+            const copy = document.createElement('span');
+            copy.className = 'history-copy';
+            const query = document.createElement('span');
+            query.className = 'history-title';
+            query.textContent = entry.query;
+            const searchedAt = document.createElement('span');
+            searchedAt.className = 'history-meta';
+            searchedAt.textContent = formatWatchedTime(entry.searchedAt);
+            copy.append(query, searchedAt);
+            open.append(copy);
+            open.addEventListener('click', () => {
+              closePanel(true, false);
+              beginSearch(entry.query);
+            });
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'history-remove';
+            remove.textContent = '×';
+            remove.setAttribute('aria-label', `Remove search ${entry.query} from history`);
+            remove.addEventListener('click', () => {
+              const updated = readHistory();
+              updated.searches = updated.searches.filter((item) => item.query !== entry.query);
+              writeHistory(updated);
+              refreshHistoryViews();
+            });
+            row.append(open, remove);
+            list.append(row);
+          }
+          searchesPanel.append(list);
+        }
+      }
+    }
+
+    function refreshHistoryViews() {
+      if (openPanel === 'history') renderHistoryView();
+      if (activeView === 'home' && !currentQuery && !new URL(window.location.href).searchParams.has('video')) {
+        loadHomeFeed(true);
+      }
+    }
+
+    function clearHistoryTab(tab, ask = true) {
+      const label = tab === 'watched' ? 'watched video history' : 'search history';
+      if (ask && !window.confirm(`Clear all ${label}?`)) return;
+      const historyData = readHistory();
+      if (tab === 'watched') historyData.watched = [];
+      else historyData.searches = [];
+      writeHistory(historyData);
+      storage.remove(FEED_KEY, true);
+      refreshHistoryViews();
+    }
+
+    function clearEverything(ask = true) {
+      if (ask && !window.confirm('Clear all watched videos and search history?')) return;
+      writeHistory({ searches: [], watched: [] });
+      storage.remove(FEED_KEY, true);
+      refreshHistoryViews();
+    }
+
+    function showSettingsMessage(message, isError = false) {
+      const element = document.getElementById('settings-message');
+      element.textContent = message;
+      element.hidden = false;
+      element.setAttribute('role', isError ? 'alert' : 'status');
+    }
+
+    function exportData() {
+      const exported = {
+        version: 1,
+        history: readHistory(),
+        settings: { ...settings, pauseHistory: historyPaused }
+      };
+      const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
+      const link = document.createElement('a');
+      const downloadUrl = URL.createObjectURL(blob);
+      link.href = downloadUrl;
+      link.download = `yt-viewer-data-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      showSettingsMessage('Your data export has been downloaded.');
+    }
+
+    async function importData(file) {
+      try {
+        const imported = JSON.parse(await file.text());
+        if (!imported || typeof imported !== 'object' || !imported.history || !Array.isArray(imported.history.watched) || !Array.isArray(imported.history.searches)) {
+          throw new Error('This file does not contain a valid YouTube Viewer export.');
+        }
+        const searches = [];
+        for (const entry of imported.history.searches) {
+          const query = typeof entry === 'string' ? entry.trim().toLowerCase() : entry && typeof entry.query === 'string' ? entry.query.trim().toLowerCase() : '';
+          if (!query || searches.some((item) => item.query === query)) continue;
+          searches.push({
+            query,
+            searchedAt: entry && typeof entry === 'object' && Number.isFinite(entry.searchedAt) ? entry.searchedAt : Date.now()
+          });
+          if (searches.length === 100) break;
+        }
+        const watched = [];
+        for (const item of imported.history.watched) {
+          if (!item || typeof item.id !== 'string' || !item.id || watched.some((entry) => entry.id === item.id)) continue;
+          watched.push({ ...item, watchedAt: Number.isFinite(item.watchedAt) ? item.watchedAt : Date.now() });
+          if (watched.length === 200) break;
+        }
+        writeHistory({ searches, watched });
+        settings = normalizeSettings(imported.settings || {});
+        historyPaused = settings.pauseHistory;
+        storage.set(SETTINGS_KEY, settings);
+        applySettings();
+        qualitySelect.value = settings.quality;
+        storage.remove(FEED_KEY, true);
+        refreshHistoryViews();
+        showSettingsMessage('Your data has been imported.');
+      } catch (error) {
+        showSettingsMessage(error.message || 'Could not import this file.', true);
+      }
+    }
+
+    function renderFeedSkeleton(container, count = 6) {
+      container.replaceChildren();
+      for (let index = 0; index < count; index += 1) {
+        const skeleton = document.createElement('div');
+        skeleton.className = 'skeleton';
+        skeleton.setAttribute('aria-hidden', 'true');
+        container.append(skeleton);
+      }
+    }
+
+    function renderBecauseRow(query, items) {
+      const section = document.createElement('section');
+      section.className = 'feed-row';
+      const heading = document.createElement('h2');
+      heading.textContent = `Because you searched ${query}`;
+      const grid = document.createElement('div');
+      grid.className = 'feed-grid';
+      for (const item of items.slice(0, 6)) {
+        const card = makeCard(item);
+        card._videoData = item;
+        grid.append(card);
+      }
+      section.append(heading, grid);
+      const existing = Array.from(becauseRowsElement.children).find((row) => row.dataset.query === query);
+      section.dataset.query = query;
+      if (existing) existing.replaceWith(section);
+      else becauseRowsElement.append(section);
+    }
+
+    function interleaveFeedResults(queries, resultsByQuery, watchedIds) {
+      const output = [];
+      const seen = new Set(watchedIds);
+      const maxLength = Math.max(...queries.map((query) => (resultsByQuery[query] || []).length), 0);
+      for (let index = 0; index < maxLength; index += 1) {
+        for (const query of queries) {
+          const item = (resultsByQuery[query] || [])[index];
+          if (!item) continue;
+          if (!item.id || seen.has(item.id)) continue;
+          seen.add(item.id);
+          output.push(item);
+        }
+      }
+      return output;
+    }
+
+    function renderRecommended(items) {
+      displayedFeedItems = items;
+      displayedFeedCount = Math.min(24, items.length);
+      recommendedGrid.replaceChildren();
+      for (const item of items.slice(0, displayedFeedCount)) {
+        const card = makeCard(item);
+        card._videoData = item;
+        recommendedGrid.append(card);
+      }
+      feedShowMoreButton.hidden = displayedFeedCount >= items.length;
+    }
+
+    async function fetchFeedQuery(query) {
+      const params = new URLSearchParams({ q: query, limit: '8' });
+      const response = await fetch(`/api/search?${params}`);
+      if (!response.ok) throw new Error('Recommendation search failed.');
+      const items = await response.json();
+      return Array.isArray(items) ? items : [];
+    }
+
+    async function loadHomeFeed(restoreScroll = false) {
+      const token = ++feedSequence;
+      if (statusTimer) window.clearTimeout(statusTimer);
+      video.pause();
+      searchView.hidden = false;
+      playerView.hidden = true;
+      homeFeed.hidden = false;
+      resultsElement.hidden = true;
+      loadMoreButton.hidden = true;
+      moreResultsMessage.hidden = true;
+      searchMessage.hidden = true;
+      currentQuery = '';
+      searchInput.value = '';
+      const historyData = renderHomeHistory();
+      if (!settings.recommendations || !historyData.searches.length) {
+        becauseRowsElement.replaceChildren();
+        recommendedRowElement.hidden = true;
+        if (restoreScroll) window.scrollTo(0, homeScrollY);
+        return;
+      }
+      const queries = historyData.searches.slice(0, settings.feedSearchCount).map((entry) => entry.query);
+      recommendedRowElement.hidden = false;
+      becauseRowsElement.replaceChildren();
+      renderFeedSkeleton(recommendedGrid, 8);
+      feedShowMoreButton.hidden = true;
+      for (const query of queries.slice(0, 2)) {
+        const row = document.createElement('section');
+        row.className = 'feed-row';
+        row.dataset.query = query;
+        const heading = document.createElement('h2');
+        heading.textContent = `Because you searched ${query}`;
+        const grid = document.createElement('div');
+        grid.className = 'feed-grid';
+        renderFeedSkeleton(grid, 6);
+        row.append(heading, grid);
+        becauseRowsElement.append(row);
+      }
+
+      const cached = readFeedCache();
+      const cachedQueries = cached && Array.isArray(cached.queries) ? cached.queries : [];
+      const cacheMatches = cached && JSON.stringify(cachedQueries) === JSON.stringify(queries);
+      let resultsByQuery;
+      if (cacheMatches) {
+        resultsByQuery = cached.results || {};
+        for (const query of queries.slice(0, 2)) {
+          renderBecauseRow(query, resultsByQuery[query] || []);
+        }
+      } else {
+        resultsByQuery = {};
+        const requestPromises = queries.map(async (query) => {
+          try {
+            const results = await fetchFeedQuery(query);
+            resultsByQuery[query] = results;
+            if (token === feedSequence && queries.slice(0, 2).includes(query)) renderBecauseRow(query, results);
+          } catch (_) {
+            resultsByQuery[query] = [];
+            if (token === feedSequence && queries.slice(0, 2).includes(query)) {
+              const row = Array.from(becauseRowsElement.children).find((item) => item.dataset.query === query);
+              if (row) row.remove();
+            }
+          }
+        });
+        await Promise.all(requestPromises);
+        writeFeedCache({ builtAt: Date.now(), queries, results: resultsByQuery });
+      }
+      if (token !== feedSequence) return;
+      const watchedIds = new Set(readHistory().watched.map((item) => item.id));
+      renderRecommended(interleaveFeedResults(queries, resultsByQuery, watchedIds));
+      if (restoreScroll) window.scrollTo(0, homeScrollY);
     }
 
     function saveCurrentResults() {
@@ -257,7 +1288,17 @@
       currentQuery = query;
       currentLimit = limit;
       hasMoreResults = true;
-      if (updateHistory) updateUrl(query);
+      if (updateHistory) {
+        closePanel(false, false);
+        updateUrl(query);
+        addSearchToHistory(query);
+      }
+      activeView = 'home';
+      if (!openPanel) setActiveNavigation('home');
+      searchView.hidden = false;
+      playerView.hidden = true;
+      homeFeed.hidden = true;
+      resultsElement.hidden = false;
       searchInput.value = query;
       searchMessage.hidden = true;
       if (append) {
@@ -336,7 +1377,7 @@
           const response = await fetch(`/api/info?${new URLSearchParams({ url: directVideo })}`);
           const info = await response.json();
           if (!response.ok) throw new Error(info.error || 'Could not open this video.');
-          openVideo(info.id, info.title, true);
+          openVideo(info.id, info.title, true, info);
         } catch (error) {
           searchMessage.textContent = error.message || 'Could not open this video.';
           searchMessage.hidden = false;
@@ -373,6 +1414,7 @@
             video.hidden = false;
             preparation.hidden = true;
             video.load();
+            if (settings.autoplay) video.play().catch(() => {});
             return;
           }
           if (state.status === 'error') throw new Error(state.error || 'Video preparation failed.');
@@ -391,18 +1433,26 @@
         const info = await response.json();
         if (!response.ok) throw new Error(info.error || 'Could not load video information.');
         if (info.title) videoTitle.textContent = info.title;
+        addVideoToHistory(info);
       } catch (error) {
         playerMessage.textContent = error.message || 'Could not load video information.';
         playerMessage.hidden = false;
       }
     }
 
-    function openVideo(videoId, title, direct = false) {
+    function openVideo(videoId, title, direct = false, item = null) {
       if (!videoId) return;
+      closePanel(false, false);
       saveCurrentResults();
+      homeScrollY = window.scrollY;
+      if (item) addVideoToHistory({ ...item, id: videoId, title: title || item.title });
       currentVideoId = videoId;
       videoTitle.textContent = title || 'Preparing video...';
+      activeView = 'home';
+      setActiveNavigation('home');
       searchView.hidden = true;
+      document.getElementById('history-view').hidden = true;
+      document.getElementById('settings-view').hidden = true;
       playerView.hidden = false;
       const queryString = new URL(window.location.href).searchParams.get('q') || currentQuery;
       if (direct) currentQuery = queryString;
@@ -418,6 +1468,16 @@
       playerView.hidden = true;
       currentQuery = query || '';
       searchInput.value = currentQuery;
+      if (!currentQuery) {
+        renderPageView('home', restoreScroll);
+        return;
+      }
+      activeView = 'home';
+      setActiveNavigation('home');
+      document.getElementById('history-view').hidden = true;
+      document.getElementById('settings-view').hidden = true;
+      homeFeed.hidden = true;
+      resultsElement.hidden = false;
       const saved = resultStates.get(currentQuery);
       if (saved) {
         currentLimit = saved.limit;
@@ -442,9 +1502,76 @@
       event.preventDefault();
       beginSearch(searchInput.value);
     });
+    document.querySelector('#page-title a').addEventListener('click', (event) => {
+      event.preventDefault();
+      navigateView('home');
+    });
+    document.getElementById('clear-history-home').addEventListener('click', () => clearEverything(true));
+    pauseHistoryHome.addEventListener('change', () => saveSettings({ pauseHistory: pauseHistoryHome.checked }));
+    pauseHistorySettings.addEventListener('change', () => saveSettings({ pauseHistory: pauseHistorySettings.checked }));
+    document.getElementById('history-filter').addEventListener('input', renderHistoryView);
+    document.getElementById('watched-tab').addEventListener('click', () => setHistoryTab('watched'));
+    document.getElementById('searches-tab').addEventListener('click', () => setHistoryTab('searches'));
+    document.getElementById('history-clear-all').addEventListener('click', () => clearHistoryTab(historyTab));
+    document.getElementById('clear-watched').addEventListener('click', () => clearHistoryTab('watched'));
+    document.getElementById('clear-searches').addEventListener('click', () => clearHistoryTab('searches'));
+    document.getElementById('clear-everything').addEventListener('click', () => clearEverything(true));
+    document.getElementById('history-close').addEventListener('click', () => closePanel(true));
+    document.getElementById('settings-close').addEventListener('click', () => closePanel(true));
+    document.getElementById('panel-backdrop').addEventListener('click', () => closePanel(true));
+    document.getElementById('setting-theme').addEventListener('change', (event) => saveSettings({ theme: event.target.value }));
+    document.getElementById('setting-quality').addEventListener('change', (event) => saveSettings({ quality: event.target.value }));
+    document.getElementById('setting-autoplay').addEventListener('change', (event) => saveSettings({ autoplay: event.target.checked }));
+    document.getElementById('setting-batch-size').addEventListener('change', (event) => saveSettings({ batchSize: Number(event.target.value) }));
+    document.getElementById('setting-recommendations').addEventListener('change', (event) => saveSettings({ recommendations: event.target.checked }));
+    document.getElementById('setting-feed-search-count').addEventListener('change', (event) => saveSettings({ feedSearchCount: Number(event.target.value) }));
+    document.getElementById('reset-settings').addEventListener('click', () => {
+      settings = normalizeSettings();
+      historyPaused = settings.pauseHistory;
+      storage.set(SETTINGS_KEY, settings);
+      applySettings();
+      qualitySelect.value = settings.quality;
+      showSettingsMessage('Settings reset to defaults.');
+      if (activeView === 'home' && !new URL(window.location.href).searchParams.has('video')) loadHomeFeed(true);
+    });
+    document.getElementById('export-data').addEventListener('click', exportData);
+    document.getElementById('import-data-button').addEventListener('click', () => document.getElementById('import-data').click());
+    document.getElementById('import-data').addEventListener('change', (event) => {
+      const [file] = event.target.files;
+      if (file) importData(file);
+      event.target.value = '';
+    });
+    for (const item of document.querySelectorAll('.nav-item[data-view]')) {
+      item.addEventListener('click', () => navigateView(item.dataset.view, false, item));
+    }
+    document.addEventListener('pointerdown', (event) => {
+      if (!openPanel) return;
+      const panel = document.getElementById(`${openPanel}-view`);
+      if (panel.contains(event.target) || event.target.closest('.nav-item[data-view], #sidebar-toggle')) return;
+      closePanel(true);
+    });
+    document.addEventListener('keydown', trapPanelFocus);
+    document.getElementById('sidebar-toggle').addEventListener('click', (event) => {
+      if (openPanel) closePanel(true);
+      const collapsed = !document.getElementById('sidebar').classList.contains('collapsed');
+      document.getElementById('sidebar').classList.toggle('collapsed', collapsed);
+      document.body.classList.toggle('sidebar-collapsed', collapsed);
+      event.currentTarget.setAttribute('aria-expanded', String(!collapsed));
+      event.currentTarget.setAttribute('aria-label', collapsed ? 'Expand navigation' : 'Collapse navigation');
+      storage.set(SIDEBAR_KEY, collapsed);
+    });
+    feedShowMoreButton.addEventListener('click', () => {
+      displayedFeedCount = Math.min(displayedFeedItems.length, displayedFeedCount + settings.batchSize);
+      for (const item of displayedFeedItems.slice(recommendedGrid.children.length, displayedFeedCount)) {
+        const card = makeCard(item);
+        card._videoData = item;
+        recommendedGrid.append(card);
+      }
+      feedShowMoreButton.hidden = displayedFeedCount >= displayedFeedItems.length;
+    });
     loadMoreButton.addEventListener('click', () => {
       if (currentLimit >= 96 || loadMoreButton.disabled) return;
-      search(currentQuery, Math.min(96, currentLimit + 12), true, false);
+      search(currentQuery, Math.min(96, currentLimit + settings.batchSize), true, false);
     });
     document.getElementById('back-to-results').addEventListener('click', () => history.back());
     qualitySelect.addEventListener('change', () => {
@@ -460,38 +1587,73 @@
       const query = url.searchParams.get('q') || '';
       const videoId = url.searchParams.get('video');
       if (videoId) {
-        searchView.hidden = true;
-        playerView.hidden = false;
-        currentVideoId = videoId;
-        qualitySelect.value = url.searchParams.get('quality') || '720';
-        loadVideoTitle(videoId);
-        startPlayback(videoId, qualitySelect.value);
-      } else {
+        const requestedQuality = url.searchParams.get('quality') || settings.quality;
+        if (openPanel) closePanel(false, false);
+        if (currentVideoId !== videoId || playerView.hidden || qualitySelect.value !== requestedQuality) {
+          activeView = 'home';
+          setActiveNavigation('home');
+          searchView.hidden = true;
+          playerView.hidden = false;
+          currentVideoId = videoId;
+          qualitySelect.value = requestedQuality;
+          loadVideoTitle(videoId);
+          startPlayback(videoId, qualitySelect.value);
+        }
+        if (url.searchParams.get('view') === 'history' || url.searchParams.get('view') === 'settings') {
+          openPanelView(url.searchParams.get('view'), null, false);
+        }
+      } else if (url.searchParams.get('view') === 'history' || url.searchParams.get('view') === 'settings') {
+        openPanelView(url.searchParams.get('view'), null, false);
+      } else if (query) {
+        if (openPanel) closePanel(false, false);
         showResults(query, true);
+      } else {
+        if (openPanel) closePanel(false, false);
+        renderPageView('home', true);
       }
     });
 
+    loadSettings();
+    const sidebarCollapsed = storage.get(SIDEBAR_KEY, false) === true;
+    document.getElementById('sidebar').classList.toggle('collapsed', sidebarCollapsed);
+    document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed);
+    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', String(!sidebarCollapsed));
+    document.getElementById('sidebar-toggle').setAttribute('aria-label', sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation');
     const initialUrl = new URL(window.location.href);
     const initialQuery = initialUrl.searchParams.get('q') || '';
     const initialVideo = initialUrl.searchParams.get('video');
+    const initialView = ['history', 'settings'].includes(initialUrl.searchParams.get('view'))
+      ? initialUrl.searchParams.get('view')
+      : 'home';
     currentQuery = initialQuery;
     searchInput.value = initialQuery;
-    history.replaceState({ view: 'results', query: initialQuery }, '', window.location.href);
-    if (initialQuery) search(initialQuery, 12, false, false);
+    history.replaceState({ view: initialVideo ? 'player' : (initialView !== 'home' ? initialView : (initialQuery ? 'results' : 'home')), query: initialQuery }, '', window.location.href);
+    if (initialQuery && !initialVideo) search(initialQuery, 12, false, false);
+    if (initialQuery && !initialVideo) addSearchToHistory(initialQuery);
     if (initialWatching && initialVideoUrl) {
       const initialId = initialVideoUrl.length === 11
         ? initialVideoUrl
         : new URL(initialVideoUrl).searchParams.get('v') || initialVideoUrl.split('/').filter(Boolean).pop();
-      updateUrl(initialQuery, initialId);
+      updateUrl(initialQuery, initialId, true);
+      loadVideoTitle(initialId);
       startPlayback(initialId, qualitySelect.value, initialStatusUrl);
     } else if (initialVideo) {
-      updateUrl(initialQuery);
-      updateUrl(initialQuery, initialVideo);
-      qualitySelect.value = initialUrl.searchParams.get('quality') || '720';
+      updateUrl(initialQuery, initialVideo, true);
+      qualitySelect.value = initialUrl.searchParams.get('quality') || settings.quality;
       loadVideoTitle(initialVideo);
       searchView.hidden = true;
       playerView.hidden = false;
       startPlayback(initialVideo, qualitySelect.value);
+      if (initialView !== 'home') openPanelView(initialView, null, false);
+    } else if (initialQuery && initialView === 'home') {
+      searchView.hidden = false;
+      homeFeed.hidden = true;
+      resultsElement.hidden = false;
+    } else {
+      currentQuery = initialQuery;
+      searchInput.value = initialQuery;
+      if (initialView !== 'home') openPanelView(initialView, null, false);
+      else renderPageView('home');
     }
   </script>
 </body>

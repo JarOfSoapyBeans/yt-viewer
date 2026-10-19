@@ -16,7 +16,11 @@ python app.py
 Install ffmpeg separately before starting the app. On Debian/Ubuntu, run
 `sudo apt install ffmpeg`. `python app.py` starts Waitress bound to
 `127.0.0.1:5000` with Flask debug disabled. Open `http://127.0.0.1:5000` and
-search for a video, or paste a YouTube video URL to open it directly. Choose
+start from the recommendations on the home page, search for a video, or paste
+a YouTube video URL to open it directly. Search and playback stay on the same
+page; searches use the `?q=...` query and playback uses the player view. Search
+and watch history is stored in the browser, with controls to pause or clear it.
+Recommendation results are cached in the current tab for 10 minutes. Choose
 360p, 480p, or 720p in the player. Video and audio download in the background;
 the page shows progress and enables playback when the MP4 is ready. Search
 results are held in memory for 10 minutes. Non-media requests are limited to
@@ -59,4 +63,47 @@ metadata extraction, search validation and caching, format selection, ffmpeg
 requirements, cache expiry, and cached-file reuse without contacting YouTube.
 `python -m pytest tests/test_app.py` checks search API validation and rate
 limiting, ID normalization, preparation status, playback routes, and Range
-requests against temporary files. `python -m pytest` runs the complete suite.
+requests against temporary files. `python -m pytest tests/test_feed.py` checks
+recommendation interleaving, duplicate removal, and watched-video filtering
+without network access. `python -m pytest` runs the complete suite.
+
+## Home page smoke test
+
+1. Open `/`, use **Clear history**, and confirm the welcome message and starter
+   topic chips appear. Choose a topic and confirm the usual `?q=...` results.
+2. Search for at least two different topics, then return to `/`. Confirm the
+   recent-search chips, both “Because you searched” rows, and recommendations
+   appear. Search history should be lowercase, newest first.
+3. Open a recommendation and use the player’s back button. Confirm the home
+   feed returns at the previous scroll position without repeating feed requests.
+   The video should appear in “Recently watched”; use its `x` to remove it.
+4. Pause history, search and open a video, then return home. Confirm neither
+   action was added to history. Unpause and use **Clear history** to confirm the
+   feed and history rows are cleared.
+5. For **Show more**, build a history with at least four searches and use the
+   browser Network panel to confirm that the first 24 recommendation cards
+   expand using already-fetched results. Feed requests should be served again
+   after the 10-minute session cache expires.
+
+## Sidebar panels smoke test
+
+Test in this order:
+
+1. **Persistent layout and sidebar:** Open `/`, run a search, open a video, and
+   open/close History and Settings each time. Confirm the main area remains
+   visible and playback continues while a panel is open. Click the active
+   sidebar item, the close button, outside the panel, and press Escape to close
+   it. Confirm focus returns to the sidebar item and Tab stays inside an open
+   panel. Refresh `?view=history` and `?view=settings`, then use Back/Forward.
+   At phone width, confirm bottom navigation and a bottom-sheet panel. Collapse
+   the desktop sidebar and refresh to verify the choice is remembered.
+2. **Settings panel:** Change theme, default quality, autoplay, recommendation
+   options, and result batch size; verify each applies immediately. Pause
+   history, try a search and open a video, then unpause and confirm neither was
+   saved. Test each confirmed clear action, export data, clear history, import
+   the exported JSON, and then use **Reset to defaults**.
+3. **History panel:** Add a few searches and open videos. Check Watched and
+   Searches tabs, title-only watched rows and date groups, filtering, removing
+   one item, and **Clear all** with both confirmation choices. Verify row
+   clicks open playback or rerun a search and close the panel, and that empty
+   states appear after clearing.
