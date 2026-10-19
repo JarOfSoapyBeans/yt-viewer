@@ -31,6 +31,7 @@ _jobs_lock = threading.Lock()
 _rate_windows = defaultdict(deque)
 _rate_lock = threading.Lock()
 RATE_LIMIT_REQUESTS = 10
+SEARCH_RATE_LIMIT_REQUESTS = 30
 RATE_LIMIT_SECONDS = 60
 clean_cache()
 FFMPEG_AVAILABLE = bool(ffmpeg_path())
@@ -46,13 +47,15 @@ def enforce_rate_limit():
     if request.endpoint in {"stream", "static"}:
         return None
 
-    client_ip = request.remote_addr or "unknown"
+    client_ip = request.headers.get("CF-Connecting-IP", "").strip() or request.remote_addr or "unknown"
+    is_search = request.endpoint == "search"
+    rate_limit_requests = SEARCH_RATE_LIMIT_REQUESTS if is_search else RATE_LIMIT_REQUESTS
     now = time.monotonic()
     with _rate_lock:
-        requests = _rate_windows[client_ip]
+        requests = _rate_windows[(client_ip, is_search)]
         while requests and now - requests[0] >= RATE_LIMIT_SECONDS:
             requests.popleft()
-        if len(requests) >= RATE_LIMIT_REQUESTS:
+        if len(requests) >= rate_limit_requests:
             retry_after = max(1, int(RATE_LIMIT_SECONDS - (now - requests[0])))
             return jsonify(error="Rate limit exceeded. Try again shortly."), 429, {
                 "Retry-After": str(retry_after)

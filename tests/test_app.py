@@ -77,6 +77,37 @@ def test_rate_limit_caps_watch_requests_per_ip_and_isolates_clients(monkeypatch)
     assert different_ip.status_code == 200
 
 
+def test_rate_limit_uses_cloudflare_ip_when_present(monkeypatch):
+    monkeypatch.setattr("app._start_job", lambda *args, **kwargs: None)
+    client = app.test_client()
+    form = {"url": "https://youtu.be/abc123", "quality": "720"}
+
+    for _ in range(app_module.RATE_LIMIT_REQUESTS):
+        response = client.post(
+            "/watch",
+            data=form,
+            environ_base={"REMOTE_ADDR": "192.0.2.12"},
+            headers={"CF-Connecting-IP": "192.0.2.13"},
+        )
+        assert response.status_code == 200
+
+    limited = client.post(
+        "/watch",
+        data=form,
+        environ_base={"REMOTE_ADDR": "192.0.2.14"},
+        headers={"CF-Connecting-IP": "192.0.2.13"},
+    )
+    different_cf_ip = client.post(
+        "/watch",
+        data=form,
+        environ_base={"REMOTE_ADDR": "192.0.2.12"},
+        headers={"CF-Connecting-IP": "192.0.2.15"},
+    )
+
+    assert limited.status_code == 429
+    assert different_cf_ip.status_code == 200
+
+
 def test_run_uses_waitress_on_loopback_with_debug_disabled(monkeypatch):
     captured = {}
 
@@ -225,12 +256,12 @@ def test_search_returns_original_ytdlp_error(monkeypatch):
     assert response.get_json()["error"] == "ERROR: blocked by test"
 
 
-def test_search_uses_existing_rate_limit(monkeypatch):
+def test_search_allows_30_requests_per_minute_per_ip(monkeypatch):
     monkeypatch.setattr(app_module, "search_videos", lambda *args: [])
     client = app.test_client()
     client_ip = "192.0.2.84"
 
-    for _ in range(app_module.RATE_LIMIT_REQUESTS):
+    for _ in range(app_module.SEARCH_RATE_LIMIT_REQUESTS):
         response = client.get(
             "/api/search",
             query_string={"q": "cats"},
@@ -246,6 +277,30 @@ def test_search_uses_existing_rate_limit(monkeypatch):
 
     assert limited.status_code == 429
     assert limited.headers["Retry-After"]
+
+
+def test_search_rate_limit_uses_cloudflare_ip(monkeypatch):
+    monkeypatch.setattr(app_module, "search_videos", lambda *args: [])
+    client = app.test_client()
+    headers = {"CF-Connecting-IP": "192.0.2.88"}
+
+    for _ in range(app_module.SEARCH_RATE_LIMIT_REQUESTS):
+        response = client.get(
+            "/api/search",
+            query_string={"q": "cats"},
+            environ_base={"REMOTE_ADDR": "192.0.2.89"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+    limited = client.get(
+        "/api/search",
+        query_string={"q": "cats"},
+        environ_base={"REMOTE_ADDR": "192.0.2.90"},
+        headers=headers,
+    )
+
+    assert limited.status_code == 429
 
 
 def test_info_route_normalizes_plain_video_id(monkeypatch):
