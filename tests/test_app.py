@@ -1,7 +1,10 @@
+import threading
+
 import pytest
 from werkzeug.datastructures import Headers
 
 import app as app_module
+import player
 from app import app
 
 
@@ -28,6 +31,7 @@ def test_player_ui_assets_and_custom_video_markup_are_present():
     assert client.get("/static/player-ui.js").status_code == 200
     assert b'<video id="video-player" playsinline preload="metadata"></video>' in response.data
     assert b'<video id="video-player" controls' not in response.data
+    assert b'value="480" selected' in response.data
     assert b'id="seek-slider"' in response.data
     assert b'id="player-speed"' in response.data
 
@@ -157,18 +161,36 @@ def test_status_returns_progress_and_does_not_restart_failed_job(monkeypatch):
     assert payload["status"] == "error"
     assert payload["progress"] == 23
     assert payload["error"] == "ERROR: original yt-dlp message"
+    assert "time_to_first_byte_seconds" in payload["timings"]
 
 
 def test_preparation_progress_transitions_to_ready_status(monkeypatch, tmp_path):
     video_url = "https://youtu.be/abc123"
     quality = 480
     key = app_module._job_key(video_url, quality)
-    app_module._jobs[key] = {"status": "preparing", "progress": 0, "message": "Preparing video..."}
+    app_module._jobs[key] = {
+        "status": "preparing",
+        "progress": 0,
+        "message": "Preparing video...",
+        "timings": {},
+        "started_at": 0.0,
+        "cancel_event": threading.Event(),
+    }
 
-    def fake_download(url, selected_quality, progress_callback):
+    def fake_download(url, selected_quality, progress_callback, cancel_event):
         assert selected_quality == quality
-        progress_callback({"progress": 54, "message": "Merging streams into MP4..."})
-        return {"id": "abc123", "title": "Example title", "path": tmp_path / "abc123_480p.mp4"}
+        assert not cancel_event.is_set()
+        progress_callback({
+            "progress": 54,
+            "message": "Merging video and audio...",
+            "timings": {"metadata_extraction_seconds": 0.3, "download_seconds": 2.0},
+        })
+        return {
+            "id": "abc123",
+            "title": "Example title",
+            "path": tmp_path / "abc123_480p.mp4",
+            "timings": {"metadata_extraction_seconds": 0.3, "download_seconds": 2.0, "merge_seconds": 0.2},
+        }
 
     monkeypatch.setattr(app_module, "download_video", fake_download)
     monkeypatch.setattr(app_module, "_start_job", lambda *args, **kwargs: key)
@@ -183,6 +205,63 @@ def test_preparation_progress_transitions_to_ready_status(monkeypatch, tmp_path)
     assert payload["progress"] == 100
     assert payload["title"] == "Example title"
     assert payload["stream_url"] == "/stream?id=abc123&quality=480"
+    assert payload["timings"]["metadata_extraction_seconds"] == 0.3
+    assert payload["timings"]["download_seconds"] == 2.0
+    assert payload["timings"]["merge_seconds"] == 0.2
+
+
+def test_background_preparation_can_be_cancelled():
+    video_url = "https://youtu.be/abcdefghijk"
+    quality = 480
+    key = app_module._job_key(video_url, quality)
+    cancel_event = threading.Event()
+    app_module._jobs[key] = {
+        "status": "preparing",
+        "cancel_event": cancel_event,
+    }
+
+    response = app.test_client().post(
+        "/api/cancel",
+        data={"url": "abcdefghijk", "quality": "480"},
+        environ_base={"REMOTE_ADDR": "192.0.2.104"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "cancelling"
+    assert cancel_event.is_set()
+
+
+def test_stream_records_time_until_first_byte_and_keeps_file_active(tmp_path, monkeypatch):
+    import os
+    import time
+
+    video_file = tmp_path / "abcdefghijk_480p.mp4"
+    video_file.write_bytes(b"stream bytes")
+    monkeypatch.setattr(app_module, "cache_path", lambda video_id, quality: video_file)
+    monkeypatch.setattr(app_module, "CACHE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr("player.CACHE_DIR", tmp_path)
+    old_time = time.time() - player.CACHE_MAX_AGE_SECONDS - 5
+    os.utime(video_file, (old_time, old_time))
+    key = app_module._job_key("abcdefghijk", 480)
+    app_module._jobs[key] = {
+        "status": "ready",
+        "started_at": time.monotonic() - 2,
+        "timings": {},
+        "video_id": "abcdefghijk",
+        "cancel_event": threading.Event(),
+    }
+    monkeypatch.setattr(app_module, "_start_job", lambda *args, **kwargs: key)
+    response = app.test_client().get(
+        "/stream",
+        query_string={"id": "abcdefghijk", "quality": "480"},
+        buffered=False,
+    )
+
+    assert next(iter(response.response)) == b"stream bytes"
+    assert app_module._jobs[key]["timings"]["time_to_first_byte_seconds"] >= 2
+    assert player.cache_file_is_active(video_file)
+    response.close()
+    assert not player.cache_file_is_active(video_file)
 
 
 def test_status_rejects_invalid_url():
@@ -334,6 +413,7 @@ def test_info_route_normalizes_plain_video_id(monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json()["title"] == "Example"
+    assert set(response.get_json()["quality_sizes"]) == {"360", "480", "720"}
     assert captured["url"] == "https://www.youtube.com/watch?v=abcdefghijk"
 
 
@@ -399,7 +479,7 @@ def test_stream_accepts_full_youtube_url(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert requested == {"video_id": "abcdefghijk", "quality": 720}
+    assert requested == {"video_id": "abcdefghijk", "quality": 480}
 
 
 def test_stream_returns_not_found_before_video_is_ready(tmp_path, monkeypatch):

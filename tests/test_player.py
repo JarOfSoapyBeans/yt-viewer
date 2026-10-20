@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 from yt_dlp.utils import DownloadError
 
@@ -43,6 +46,28 @@ def test_get_info_includes_video_details_for_player_view(monkeypatch):
         "view_count": 1234,
         "upload_date": "20250102",
     }
+
+
+def test_extract_info_is_cached_by_video_id_for_thirty_minutes(monkeypatch):
+    extracted = []
+    clock = [100.0]
+    monkeypatch.setattr(player, "_info_cache", {})
+    monkeypatch.setattr(player, "_info_locks", {})
+    monkeypatch.setattr(player.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        player,
+        "_extract_info_uncached",
+        lambda url: extracted.append(url) or {"id": "abcdefghijk", "title": "Cached"},
+    )
+
+    first = player._extract_info("abcdefghijk")
+    second = player._extract_info("https://youtu.be/abcdefghijk")
+    assert first is second
+    assert len(extracted) == 1
+
+    clock[0] += player.INFO_CACHE_TTL_SECONDS + 1
+    player._extract_info("abcdefghijk")
+    assert len(extracted) == 2
 
 
 @pytest.mark.parametrize(
@@ -95,6 +120,37 @@ def test_format_selector_rejects_other_qualities():
         format_selector(1080)
 
 
+def test_cache_key_and_video_locks_are_canonical():
+    assert player.cache_key("abcdefghijk", "480p") == ("abcdefghijk", 480)
+    assert player.cache_key("abcdefghijk", 480) == player.cache_key("abcdefghijk", "480")
+    assert player._lock_for_video("abcdefghijk") is player._lock_for_video("abcdefghijk")
+    assert player._lock_for_video("abcdefghijk") is not player._lock_for_video("lmnopqrstuv")
+
+
+def test_separate_format_downloads_run_in_parallel():
+    barrier = threading.Barrier(2)
+
+    class FakeDownloader:
+        def dl(self, name, info):
+            barrier.wait(timeout=2)
+            return True, True
+
+    downloader = FakeDownloader()
+    formats = [
+        {"format_id": "video", "url": "https://example.test/video"},
+        {"format_id": "audio", "url": "https://example.test/audio"},
+    ]
+
+    with player._parallelize_format_downloads(downloader, formats):
+        assert downloader.dl("video.mp4", formats[0]) == (True, True)
+        assert downloader.dl("audio.m4a", formats[1]) == (True, True)
+
+
+def test_quality_size_labels_are_estimates_without_network():
+    assert player.estimated_size_label(60, 480) == "~8 MB"
+    assert player.estimated_size_label(0, 720) == "~1 KB"
+
+
 def test_clean_cache_removes_files_older_than_one_hour(tmp_path, monkeypatch):
     monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
     stale = tmp_path / "stale.mp4"
@@ -113,10 +169,30 @@ def test_clean_cache_removes_files_older_than_one_hour(tmp_path, monkeypatch):
     assert fresh.exists()
 
 
+def test_clean_cache_preserves_active_cache_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
+    active_file = tmp_path / "active.mp4"
+    stale_file = tmp_path / "stale.mp4"
+    active_file.touch()
+    stale_file.touch()
+    import os
+
+    stale_timestamp = 10_000 - player.CACHE_MAX_AGE_SECONDS - 1
+    os.utime(active_file, (stale_timestamp, stale_timestamp))
+    os.utime(stale_file, (stale_timestamp, stale_timestamp))
+
+    with player.protect_cache_file(active_file):
+        assert clean_cache(now=10_000) == 1
+        assert active_file.exists()
+        assert not stale_file.exists()
+
+
 def test_download_video_merges_to_mp4_and_reuses_cached_file(tmp_path, monkeypatch):
     monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
-    monkeypatch.setattr(player, "get_info", lambda url: {"id": "abc123", "title": "Test"})
+    monkeypatch.setattr(player, "_extract_info", lambda url: {"id": "abc123", "title": "Test"})
+    monkeypatch.setattr(player, "info_timing", lambda video_id: 0.25)
     monkeypatch.setattr(player, "require_ffmpeg", lambda: None)
+    monkeypatch.setattr(player, "ARIA2C_PATH", "/usr/bin/aria2c")
     captured = {}
 
     class FakeYoutubeDL:
@@ -129,11 +205,11 @@ def test_download_video_merges_to_mp4_and_reuses_cached_file(tmp_path, monkeypat
         def __exit__(self, *args):
             return False
 
-        def extract_info(self, url, download):
+        def process_ie_result(self, info, download):
             assert download is True
+            captured["info"] = info
             output = Path(captured["options"]["outtmpl"].replace("%(ext)s", "mp4"))
             output.touch()
-            return {"id": "abc123"}
 
     from pathlib import Path
 
@@ -146,15 +222,71 @@ def test_download_video_merges_to_mp4_and_reuses_cached_file(tmp_path, monkeypat
     assert captured["options"]["format"] == format_selector(480)
     assert captured["options"]["merge_output_format"] == "mp4"
     assert captured["options"]["outtmpl"].endswith("abc123_480p.%(ext)s")
-    assert callbacks[-1] == {"progress": 100, "message": "Video ready."}
+    assert captured["options"]["concurrent_fragment_downloads"] == 8
+    assert captured["options"]["http_chunk_size"] == 10_485_760
+    assert captured["options"]["retries"] == 5
+    assert captured["options"]["fragment_retries"] == 5
+    assert captured["options"]["postprocessor_args"]["merger+ffmpeg_o"] == [
+        "-c", "copy", "-movflags", "+faststart"
+    ]
+    assert captured["options"]["external_downloader"] == {"https": "/usr/bin/aria2c"}
+    assert captured["options"]["external_downloader_args"]["aria2c"] == [
+        "-x", "16", "-s", "16", "-k", "1M"
+    ]
+    assert callbacks[-1]["progress"] == 100
+    assert callbacks[-1]["timings"]["metadata_extraction_seconds"] == 0.25
 
     cached_result = download_video("https://youtu.be/abc123", 480)
     assert cached_result["cached"] is True
 
 
+def test_simultaneous_download_requests_share_the_video_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(player, "_extract_info", lambda url: {"id": "abc123", "title": "Test"})
+    monkeypatch.setattr(player, "info_timing", lambda video_id: 0.1)
+    monkeypatch.setattr(player, "require_ffmpeg", lambda: None)
+    download_count = 0
+    count_lock = threading.Lock()
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def process_ie_result(self, info, download):
+            nonlocal download_count
+            assert download
+            with count_lock:
+                download_count += 1
+            time.sleep(0.03)
+            output = Path(self.options["outtmpl"].replace("%(ext)s", "mp4"))
+            output.touch()
+
+    from pathlib import Path
+
+    monkeypatch.setattr(player.yt_dlp, "YoutubeDL", FakeYoutubeDL)
+    results = []
+    workers = [
+        threading.Thread(target=lambda: results.append(download_video("https://youtu.be/abc123", 480)))
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=2)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert download_count == 1
+    assert len(results) == 2
+
+
 def test_download_video_requires_ffmpeg_for_uncached_video(tmp_path, monkeypatch):
     monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
-    monkeypatch.setattr(player, "get_info", lambda url: {"id": "abc123", "title": "Test"})
     monkeypatch.setattr(player, "ffmpeg_path", lambda: None)
 
     with pytest.raises(FFmpegNotFoundError, match="Install ffmpeg"):
@@ -169,8 +301,6 @@ def test_download_video_uses_cached_url_without_network_metadata(tmp_path, monke
         '{"id": "abc123", "title": "Cached title"}',
         encoding="utf-8",
     )
-    monkeypatch.setattr(player, "get_info", lambda url: pytest.fail("metadata should not be fetched"))
-
     result = download_video("https://youtu.be/abc123", 480)
 
     assert result["cached"] is True
@@ -180,7 +310,7 @@ def test_download_video_uses_cached_url_without_network_metadata(tmp_path, monke
 
 def test_download_video_preserves_ytdlp_error_text(tmp_path, monkeypatch):
     monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
-    monkeypatch.setattr(player, "get_info", lambda url: {"id": "abc123", "title": "Test"})
+    monkeypatch.setattr(player, "_extract_info", lambda url: {"id": "abc123", "title": "Test"})
     monkeypatch.setattr(player, "require_ffmpeg", lambda: None)
 
     class BrokenYoutubeDL:
@@ -193,7 +323,7 @@ def test_download_video_preserves_ytdlp_error_text(tmp_path, monkeypatch):
         def __exit__(self, *args):
             return False
 
-        def extract_info(self, url, download):
+        def process_ie_result(self, info, download):
             raise DownloadError("ERROR: requested test format is unavailable")
 
     monkeypatch.setattr(player.yt_dlp, "YoutubeDL", BrokenYoutubeDL)

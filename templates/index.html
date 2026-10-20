@@ -423,6 +423,7 @@
         <section id="preparing" aria-live="polite">
           <strong id="status-message">Preparing video...</strong>
           <progress id="download-progress" max="100" value="0"></progress>
+          <small id="timing-details"></small>
         </section>
         <p id="player-message" role="alert" hidden></p>
       </details>
@@ -451,12 +452,14 @@
     const playerMessage = document.getElementById('player-message');
     const video = document.getElementById('video-player');
     const playerStatusSummary = document.getElementById('player-status-summary');
+    const timingDetails = document.getElementById('timing-details');
     const resultStates = new Map();
     let currentQuery = '';
     let currentLimit = 12;
     let hasMoreResults = true;
     let currentVideoId = '';
     let statusTimer = null;
+    let backgroundPrepare = null;
     let searchSequence = 0;
     let feedSequence = 0;
     const HISTORY_KEY = 'yt-viewer-history-v1';
@@ -480,7 +483,7 @@
     let historyPaused = false;
     let settings = {
       theme: 'system',
-      quality: '720',
+      quality: '480',
       autoplay: false,
       batchSize: 12,
       recommendations: true,
@@ -610,7 +613,7 @@
       if (!value || typeof value !== 'object') value = {};
       return {
         theme: ['light', 'dark', 'system'].includes(value.theme) ? value.theme : 'system',
-        quality: ['360', '480', '720'].includes(String(value.quality)) ? String(value.quality) : '720',
+        quality: ['360', '480', '720'].includes(String(value.quality)) ? String(value.quality) : '480',
         autoplay: value.autoplay === true,
         batchSize: [12, 24, 36].includes(Number(value.batchSize)) ? Number(value.batchSize) : 12,
         recommendations: value.recommendations !== false,
@@ -859,7 +862,46 @@
       }
     }
 
-    function makeCard(item) {
+    function cancelBackgroundPreparation(exceptVideoId = '') {
+      const preparationToCancel = backgroundPrepare;
+      if (!preparationToCancel || preparationToCancel.videoId === exceptVideoId) return;
+      backgroundPrepare = null;
+      fetch('/api/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: new URLSearchParams({
+          url: preparationToCancel.videoId,
+          quality: preparationToCancel.quality
+        })
+      }).then((response) => {
+        if (!response.ok) throw new Error(`Could not cancel background preparation (${response.status}).`);
+      }).catch((error) => console.error(error));
+    }
+
+    function beginBackgroundPreparation(item) {
+      if (backgroundPrepare?.videoId === item.id) return;
+      cancelBackgroundPreparation();
+      const preparationToStart = { videoId: item.id, quality: settings.quality };
+      backgroundPrepare = preparationToStart;
+      const params = new URLSearchParams({ url: item.id, quality: preparationToStart.quality });
+      fetch(`/api/status?${params}`, { cache: 'no-store' })
+        .then((response) => {
+          if (!response.ok) throw new Error(`Background preparation failed (${response.status}).`);
+          return response.json();
+        })
+        .then((state) => {
+          if (state.status !== 'preparing' && state.status !== 'cancelling' &&
+              backgroundPrepare === preparationToStart) {
+            backgroundPrepare = null;
+          }
+        })
+        .catch((error) => {
+          if (backgroundPrepare === preparationToStart) backgroundPrepare = null;
+          console.error(error);
+        });
+    }
+
+    function makeCard(item, prefetchOnHover = false) {
       const card = document.createElement('button');
       card.type = 'button';
       card.className = 'video-card';
@@ -899,7 +941,17 @@
       details.textContent = `${formatViews(item.view_count)} - ${formatDate(item.upload_date)}`;
       copy.append(title, channel, details);
       card.append(thumbnail, copy);
+      if (prefetchOnHover) {
+        let hoverTimer = 0;
+        card.addEventListener('pointerenter', (event) => {
+          if (event.pointerType !== 'mouse' || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+          window.clearTimeout(hoverTimer);
+          hoverTimer = window.setTimeout(() => beginBackgroundPreparation(item), 400);
+        });
+        card.addEventListener('pointerleave', () => window.clearTimeout(hoverTimer));
+      }
       card.addEventListener('click', () => {
+        cancelBackgroundPreparation(item.id);
         openVideo(item.id, item.title, false, item);
       });
       return card;
@@ -1365,7 +1417,8 @@
       let added = 0;
       for (const item of items) {
         if (!item.id || existingIds.has(item.id)) continue;
-        const card = makeCard(item);
+        const prefetchOnHover = !append && resultsElement.querySelectorAll('.video-card').length === 0 && added === 0;
+        const card = makeCard(item, prefetchOnHover);
         card._videoData = item;
         resultsElement.append(card);
         existingIds.add(item.id);
@@ -1501,6 +1554,7 @@
       progress.hidden = false;
       progress.value = 0;
       statusMessage.textContent = 'Preparing video...';
+      timingDetails.textContent = '';
       playerStatusSummary.textContent = 'Video status — Preparing video...';
       video.closest('.video-shell').classList.remove('is-ready', 'controls-hidden');
       window.playerUI.clearError();
@@ -1513,6 +1567,11 @@
           statusMessage.textContent = state.message || 'Preparing video...';
           playerStatusSummary.textContent = `Video status — ${statusMessage.textContent}`;
           progress.value = state.progress || 0;
+          const timings = state.timings || {};
+          timingDetails.textContent = Object.entries(timings)
+            .filter(([name, seconds]) => name !== 'time_to_first_byte_seconds' && Number.isFinite(seconds))
+            .map(([name, seconds]) => `${name.replaceAll('_', ' ')}: ${seconds.toFixed(2)}s`)
+            .join(' · ');
           if (state.status === 'ready') {
             videoTitle.textContent = state.title || videoTitle.textContent;
             video.src = state.stream_url;
@@ -1523,7 +1582,7 @@
             return;
           }
           if (state.status === 'error') throw new Error(state.error || 'Video preparation failed.');
-          statusTimer = window.setTimeout(pollStatus, 9000);
+          statusTimer = window.setTimeout(pollStatus, 1000);
         } catch (error) {
           statusMessage.textContent = error.message;
           playerStatusSummary.textContent = `Video status — ${error.message}`;
@@ -1582,6 +1641,7 @@
 
     function openVideo(videoId, title, direct = false, item = null) {
       if (!videoId) return;
+      cancelBackgroundPreparation(videoId);
       closePanel(false, false);
       saveCurrentResults();
       homeScrollY = window.scrollY;
@@ -1598,6 +1658,7 @@
       const queryString = new URL(window.location.href).searchParams.get('q') || currentQuery;
       if (direct) currentQuery = queryString;
       updateUrl(queryString, videoId);
+      loadVideoTitle(videoId);
       startPlayback(videoId, qualitySelect.value);
       window.scrollTo(0, 0);
     }

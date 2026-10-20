@@ -422,6 +422,14 @@
       const channel = document.getElementById('video-channel');
       const meta = document.getElementById('video-meta');
       channel.textContent = info.channel || info.uploader || '';
+      if (info.quality_sizes && typeof info.quality_sizes === 'object') {
+        for (const qualitySelect of document.querySelectorAll('#quality, #setting-quality')) {
+          for (const option of qualitySelect.options) {
+            const size = info.quality_sizes[option.value];
+            if (size) option.textContent = `${option.value}p (${size})`;
+          }
+        }
+      }
       const pieces = [];
       if (Number.isFinite(Number(info.view_count)) && info.view_count !== null) {
         pieces.push(`${Number(info.view_count).toLocaleString()} views`);

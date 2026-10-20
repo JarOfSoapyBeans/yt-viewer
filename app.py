@@ -1,6 +1,7 @@
 """Flask web interface for preparing and playing cached YouTube videos."""
 
 import hashlib
+import logging
 import re
 import threading
 import time
@@ -11,14 +12,20 @@ from waitress import serve
 
 from player import (
     PlayerError,
+    PreparationCancelled,
     QUALITIES,
     cached_video_info,
+    cache_file_is_active,
     cache_path,
     clean_cache,
     download_video,
+    estimated_size_label,
+    info_timing,
     ffmpeg_path,
     get_info,
     normalize_quality,
+    retain_cache_file,
+    try_retain_cache_file,
     search_videos,
     validate_url,
     video_id_from_url,
@@ -27,6 +34,7 @@ from player import (
 
 app = Flask(__name__)
 app.config["DEBUG"] = False
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 _jobs = {}
 _jobs_lock = threading.Lock()
@@ -70,7 +78,7 @@ def _render_index(**context):
     values = {
         "ffmpeg_warning": FFMPEG_WARNING,
         "qualities": QUALITIES,
-        "quality": 720,
+        "quality": 480,
         "title": None,
         "video_url": "",
         "watching": False,
@@ -82,7 +90,11 @@ def _render_index(**context):
 
 
 def _job_key(video_url, quality):
-    value = f"{video_url}\0{quality}".encode("utf-8")
+    try:
+        video_id = video_id_from_url(video_url)
+    except PlayerError:
+        video_id = video_url
+    value = f"{video_id}\0{normalize_quality(quality)}".encode("utf-8")
     return hashlib.sha256(value).hexdigest()
 
 
@@ -105,12 +117,32 @@ def _update_progress(key, data):
     with _jobs_lock:
         job = _jobs.get(key)
         if job and job["status"] == "preparing":
-            job.update(data)
+            update = dict(data)
+            timings = update.pop("timings", None)
+            job.update(update)
+            if timings:
+                job.setdefault("timings", {}).update(timings)
 
 
 def _prepare_video(key, video_url, quality):
+    with _jobs_lock:
+        job = _jobs.get(key)
+        if not job:
+            return
+        cancel_event = job["cancel_event"]
     try:
-        result = download_video(video_url, quality, lambda data: _update_progress(key, data))
+        result = download_video(
+            video_url,
+            quality,
+            lambda data: _update_progress(key, data),
+            cancel_event,
+        )
+    except PreparationCancelled:
+        with _jobs_lock:
+            if key in _jobs:
+                _jobs[key].update(status="cancelled", message="Preparation cancelled.")
+        app.logger.info("Video preparation cancelled for %r", video_url)
+        return
     except PlayerError as error:
         app.logger.exception("Video preparation failed for %r", video_url)
         with _jobs_lock:
@@ -129,6 +161,7 @@ def _prepare_video(key, video_url, quality):
             message="Video ready.",
             video_id=result["id"],
             title=result["title"],
+            timings=result.get("timings", _jobs[key].get("timings", {})),
         )
 
 
@@ -136,11 +169,18 @@ def _start_job(video_url, quality, retry=False):
     key = _job_key(video_url, quality)
     with _jobs_lock:
         job = _jobs.get(key)
-        if job and job["status"] in {"preparing", "ready"}:
+        if job and job["status"] in {"preparing", "ready", "cancelling"}:
             return key
-        if job and job["status"] == "error" and not retry:
+        if job and job["status"] in {"error", "cancelled"} and not retry:
             return key
-        _jobs[key] = {"status": "preparing", "progress": 0, "message": "Preparing video..."}
+        _jobs[key] = {
+            "status": "preparing",
+            "progress": 0,
+            "message": "Preparing video...",
+            "timings": {},
+            "started_at": time.monotonic(),
+            "cancel_event": threading.Event(),
+        }
         worker = threading.Thread(target=_prepare_video, args=(key, video_url, quality), daemon=True)
         worker.start()
     return key
@@ -158,7 +198,7 @@ def watch():
         return _render_index(error="YouTube URL is required."), 400
     try:
         video_url = validate_url(video_url)
-        quality = normalize_quality(request.form.get("quality", "720"))
+        quality = normalize_quality(request.form.get("quality", "480"))
     except (PlayerError, ValueError) as error:
         return _render_index(error=str(error), video_url=video_url), 400
 
@@ -176,13 +216,17 @@ def video_status():
     video_url = request.args.get("url", "").strip()
     try:
         video_url = validate_url(video_url)
-        quality = normalize_quality(request.args.get("quality", "720"))
+        quality = normalize_quality(request.args.get("quality", "480"))
     except (PlayerError, ValueError) as error:
         return jsonify(status="error", error=str(error)), 400
 
     key = _start_job(video_url, quality)
     with _jobs_lock:
         state = dict(_jobs[key])
+        state.pop("cancel_event", None)
+        state.pop("started_at", None)
+        state["timings"] = dict(state.get("timings", {}))
+        state["timings"].setdefault("time_to_first_byte_seconds", None)
     if state["status"] == "ready":
         state["stream_url"] = url_for("stream", id=state["video_id"], quality=quality)
     return jsonify(state)
@@ -194,9 +238,34 @@ def video_info():
     try:
         video_url = validate_url(video_url)
         info = get_info(video_url)
+        info["quality_sizes"] = {
+            str(quality): estimated_size_label(info.get("duration"), quality)
+            for quality in QUALITIES
+        }
+        info["timings"] = {"metadata_extraction_seconds": info_timing(info["id"])}
     except (PlayerError, ValueError) as error:
         return jsonify(error=str(error)), 400
     return jsonify(info)
+
+
+@app.post("/api/cancel")
+def cancel_preparation():
+    video_url = request.form.get("url", request.args.get("url", "")).strip()
+    try:
+        video_url = validate_url(video_url)
+        quality = normalize_quality(request.form.get("quality", request.args.get("quality", "480")))
+    except (PlayerError, ValueError) as error:
+        return jsonify(status="error", error=str(error)), 400
+
+    key = _job_key(video_url, quality)
+    with _jobs_lock:
+        job = _jobs.get(key)
+        if not job or job["status"] != "preparing":
+            return jsonify(status="not_preparing")
+        job["cancel_event"].set()
+        job["status"] = "cancelling"
+    app.logger.info("Cancellation requested for video preparation %s at %sp", video_id_from_url(video_url), quality)
+    return jsonify(status="cancelling")
 
 
 @app.get("/api/search")
@@ -233,20 +302,87 @@ def stream():
     if not video_id:
         return "Video ID is required.", 400
     try:
-        quality = normalize_quality(request.args.get("quality", "720"))
+        quality = normalize_quality(request.args.get("quality", "480"))
     except ValueError as error:
         return str(error), 400
 
     path = cache_path(video_id, quality)
-    if not path.is_file():
+    release = try_retain_cache_file(path)
+    if release is None:
+        if path.is_file() and cache_file_is_active(path):
+            return "Video is still preparing.", 404
         return "Prepared video is not in the cache.", 404
-    return send_file(path, mimetype="video/mp4", conditional=True, etag=True, max_age=0)
+    return _send_cached_file(path, video_id, quality, conditional=True, release=release)
+
+
+def _send_cached_file(
+    path,
+    video_id,
+    quality,
+    conditional=False,
+    as_attachment=False,
+    download_name=None,
+    release=None,
+):
+    request_started = time.monotonic()
+    key = _job_key(video_id, quality)
+    if release is None:
+        release = retain_cache_file(path)
+    try:
+        response = send_file(
+            path,
+            mimetype="video/mp4",
+            conditional=conditional,
+            etag=True,
+            max_age=0,
+            as_attachment=as_attachment,
+            download_name=download_name,
+        )
+    except OSError:
+        release()
+        app.logger.exception("Could not open cached video %s at quality %sp", video_id, quality)
+        return "Prepared video could not be read.", 500
+
+    original_iterator = response.response
+    first_chunk = True
+
+    def timed_response():
+        nonlocal first_chunk
+        try:
+            for chunk in original_iterator:
+                if first_chunk:
+                    first_chunk = False
+                    request_seconds = time.monotonic() - request_started
+                    preparation_seconds = None
+                    with _jobs_lock:
+                        job = _jobs.get(key)
+                        started_at = job.get("started_at") if job else None
+                        if started_at is not None:
+                            preparation_seconds = time.monotonic() - started_at
+                            job.setdefault("timings", {})["time_to_first_byte_seconds"] = preparation_seconds
+                    app.logger.info(
+                        "Video timing id=%s quality=%sp stage=first_byte request_seconds=%.3f preparation_seconds=%s",
+                        video_id,
+                        quality,
+                        request_seconds,
+                        f"{preparation_seconds:.3f}" if preparation_seconds is not None else "n/a",
+                    )
+                yield chunk
+        finally:
+            close = getattr(original_iterator, "close", None)
+            if close:
+                close()
+            release()
+
+    response.response = timed_response()
+    response.call_on_close(release)
+    return response
 
 
 @app.get("/download")
 def download():
     video_id = request.args.get("id", "")
-    requested_quality = request.args.get("quality", "720")
+    requested_quality = request.args.get("quality", "480")
     if requested_quality not in {str(option) for option in QUALITIES}:
         error = "Choose 360p, 480p, or 720p."
         app.logger.warning("Rejected download quality %r: %s", requested_quality, error)
@@ -263,17 +399,18 @@ def download():
 
     try:
         path = cache_path(video_id, quality)
-        if not path.is_file():
+        release = try_retain_cache_file(path)
+        if release is None:
             app.logger.info("Download requested before video %s at quality %sp is ready", video_id, quality)
             return "Video is still preparing.", 409
-        if request.method == "HEAD":
-            return "", 200
         metadata = cached_video_info(path, video_id)
-        return send_file(
+        return _send_cached_file(
             path,
-            mimetype="video/mp4",
+            video_id=video_id,
+            quality=quality,
             as_attachment=True,
             download_name=clean_download_filename(metadata.get("title")),
+            release=release,
         )
     except OSError:
         app.logger.exception("Could not serve download for video %s at quality %sp", video_id, quality)

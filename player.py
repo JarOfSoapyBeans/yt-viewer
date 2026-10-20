@@ -1,10 +1,14 @@
 """YouTube metadata and cached MP4 download helpers."""
 
 import json
+import logging
 import re
 import shutil
 import threading
 import time
+from copy import deepcopy
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -19,8 +23,21 @@ CACHE_MAX_AGE_SECONDS = 60 * 60
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 SEARCH_CACHE_TTL_SECONDS = 10 * 60
+INFO_CACHE_TTL_SECONDS = 30 * 60
+ESTIMATED_BITRATES = {360: 600_000, 480: 1_100_000, 720: 2_400_000}
+ARIA2C_PATH = shutil.which("aria2c")
 _search_cache = {}
 _search_cache_lock = threading.Lock()
+_info_cache = {}
+_info_cache_lock = threading.Lock()
+_info_locks = {}
+_info_locks_lock = threading.Lock()
+_video_locks = {}
+_video_locks_lock = threading.Lock()
+_active_cache_paths = {}
+_preparing_cache_paths = {}
+_cache_activity_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 class PlayerError(Exception):
@@ -185,7 +202,7 @@ def normalize_quality(quality):
     return height
 
 
-def format_selector(quality=720):
+def format_selector(quality=480):
     height = normalize_quality(quality)
     selector = FORMAT_SELECTOR.replace("height<=720", f"height<={height}")
     if height < 720:
@@ -194,6 +211,104 @@ def format_selector(quality=720):
             f"/b[ext=mp4][height<={height}]/b[height<={height}]",
         )
     return selector
+
+
+def cache_key(video_id, quality):
+    """Return the canonical per-video, per-quality cache key."""
+    return str(video_id), normalize_quality(quality)
+
+
+def estimated_size_bytes(duration, quality):
+    """Estimate MP4 size from duration and a representative total bitrate."""
+    height = normalize_quality(quality)
+    seconds = max(0, float(duration or 0))
+    return int(seconds * ESTIMATED_BITRATES[height] / 8)
+
+
+def estimated_size_label(duration, quality):
+    size_mb = estimated_size_bytes(duration, quality) / (1024 * 1024)
+    if size_mb < 1:
+        return f"~{max(1, round(size_mb * 1024))} KB"
+    return f"~{round(size_mb)} MB"
+
+
+def _lock_for_video(video_id):
+    with _video_locks_lock:
+        return _video_locks.setdefault(str(video_id), threading.Lock())
+
+
+def _lock_for_info(video_id):
+    with _info_locks_lock:
+        return _info_locks.setdefault(str(video_id), threading.Lock())
+
+
+@contextmanager
+def protect_cache_file(path):
+    cache_file = Path(path)
+    with _cache_activity_lock:
+        _active_cache_paths[cache_file] = _active_cache_paths.get(cache_file, 0) + 1
+        _preparing_cache_paths[cache_file] = _preparing_cache_paths.get(cache_file, 0) + 1
+    try:
+        yield
+    finally:
+        with _cache_activity_lock:
+            active_count = _active_cache_paths.get(cache_file, 0) - 1
+            if active_count > 0:
+                _active_cache_paths[cache_file] = active_count
+            else:
+                _active_cache_paths.pop(cache_file, None)
+            preparing_count = _preparing_cache_paths.get(cache_file, 0) - 1
+            if preparing_count > 0:
+                _preparing_cache_paths[cache_file] = preparing_count
+            else:
+                _preparing_cache_paths.pop(cache_file, None)
+
+
+def _is_preparing_path(path):
+    return any(
+        active_path == path or path.name.startswith(active_path.stem)
+        for active_path in _preparing_cache_paths
+    )
+
+
+def try_retain_cache_file(path):
+    """Atomically retain a ready cached file, or return None if it is unavailable."""
+    cache_file = Path(path)
+    with _cache_activity_lock:
+        if _is_preparing_path(cache_file) or not cache_file.is_file():
+            return None
+        _active_cache_paths[cache_file] = _active_cache_paths.get(cache_file, 0) + 1
+    released = False
+    release_lock = threading.Lock()
+
+    def release():
+        nonlocal released
+        with release_lock:
+            if released:
+                return
+            released = True
+        with _cache_activity_lock:
+            active_count = _active_cache_paths.get(cache_file, 0) - 1
+            if active_count > 0:
+                _active_cache_paths[cache_file] = active_count
+            else:
+                _active_cache_paths.pop(cache_file, None)
+
+    return release
+
+
+def retain_cache_file(path):
+    """Protect a cached file until its response has been closed."""
+    release = try_retain_cache_file(path)
+    if release is None:
+        raise FileNotFoundError(f"Cached video is unavailable: {path}")
+    return release
+
+
+def cache_file_is_active(path):
+    with _cache_activity_lock:
+        cache_file = Path(path)
+        return _active_cache_paths.get(cache_file, 0) > 0 or _is_preparing_path(cache_file)
 
 
 def ffmpeg_path():
@@ -212,14 +327,20 @@ def clean_cache(now=None):
     cutoff = (time.time() if now is None else now) - CACHE_MAX_AGE_SECONDS
     removed = 0
     for path in CACHE_DIR.iterdir():
-        if path.is_file() and path.stat().st_mtime < cutoff:
-            path.unlink()
-            removed += 1
+        with _cache_activity_lock:
+            if (
+                any(active_path == path or path.name.startswith(active_path.stem) for active_path in _active_cache_paths)
+                or not path.is_file()
+            ):
+                continue
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
     return removed
 
 
-def cache_path(video_id, quality=720):
-    height = normalize_quality(quality)
+def cache_path(video_id, quality=480):
+    video_id, height = cache_key(video_id, quality)
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(video_id))
     return CACHE_DIR / f"{safe_id}_{height}p.mp4"
 
@@ -260,7 +381,53 @@ def cached_video_info(output_path, video_id):
 
 def _extract_info(url):
     validated_url = validate_url(url)
-    options = {"quiet": True, "no_warnings": True, "noplaylist": True}
+    video_id = video_id_from_url(validated_url)
+    now = time.monotonic()
+    with _info_cache_lock:
+        cached = _info_cache.get(video_id)
+        if cached and now - cached["cached_at"] < INFO_CACHE_TTL_SECONDS:
+            return cached["info"]
+        if cached:
+            _info_cache.pop(video_id, None)
+
+    with _lock_for_info(video_id):
+        now = time.monotonic()
+        with _info_cache_lock:
+            cached = _info_cache.get(video_id)
+            if cached and now - cached["cached_at"] < INFO_CACHE_TTL_SECONDS:
+                return cached["info"]
+            if cached:
+                _info_cache.pop(video_id, None)
+
+        started_at = time.perf_counter()
+        info = _extract_info_uncached(validated_url)
+        elapsed = time.perf_counter() - started_at
+        with _info_cache_lock:
+            _info_cache[video_id] = {
+                "info": info,
+                "cached_at": time.monotonic(),
+                "metadata_seconds": elapsed,
+            }
+        logger.info("Video timing id=%s stage=metadata_extraction seconds=%.3f", video_id, elapsed)
+        return info
+
+
+def info_timing(video_id):
+    with _info_cache_lock:
+        cached = _info_cache.get(str(video_id))
+        if cached and time.monotonic() - cached["cached_at"] < INFO_CACHE_TTL_SECONDS:
+            return cached["metadata_seconds"]
+    return None
+
+
+def _extract_info_uncached(url):
+    validated_url = validate_url(url)
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "cachedir": str(CACHE_DIR / "yt-dlp"),
+    }
     try:
         with yt_dlp.YoutubeDL(options) as downloader:
             info = downloader.extract_info(validated_url, download=False)
@@ -293,75 +460,237 @@ def get_info(url):
     }
 
 
-def download_video(url, quality=720, progress_callback=None):
+def get_info_quality_sizes(url):
+    info = _extract_info(url)
+    duration = info.get("duration")
+    return {
+        str(quality): estimated_size_label(duration, quality)
+        for quality in QUALITIES
+    }
+
+
+def _format_rate(value):
+    if not isinstance(value, (int, float)) or value <= 0:
+        return None
+    units = ("B/s", "KB/s", "MB/s", "GB/s")
+    rate = float(value)
+    unit = 0
+    while rate >= 1024 and unit < len(units) - 1:
+        rate /= 1024
+        unit += 1
+    return f"{rate:.1f} {units[unit]}"
+
+
+def _format_eta(value):
+    if not isinstance(value, (int, float)) or value < 0:
+        return None
+    seconds = int(value)
+    return f"{seconds // 60}:{seconds % 60:02d} remaining"
+
+
+@contextmanager
+def _parallelize_format_downloads(downloader, requested_formats):
+    format_keys = {
+        (str(fmt.get("format_id")), fmt.get("url"))
+        for fmt in requested_formats
+        if fmt.get("format_id") and fmt.get("url")
+    }
+    if len(format_keys) < 2:
+        yield
+        return
+
+    original_download = downloader.dl
+    executor = ThreadPoolExecutor(max_workers=len(format_keys))
+    futures = []
+
+    def parallel_download(name, info, *args, **kwargs):
+        key = (str(info.get("format_id")), info.get("url"))
+        if key not in format_keys:
+            return original_download(name, info, *args, **kwargs)
+
+        futures.append(executor.submit(original_download, name, info, *args, **kwargs))
+        if len(futures) < len(format_keys):
+            return True, True
+        results = [future.result() for future in futures]
+        return all(result[0] for result in results), any(result[1] for result in results)
+
+    downloader.dl = parallel_download
+    try:
+        yield
+    finally:
+        downloader.dl = original_download
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+class PreparationCancelled(PlayerError):
+    """The user cancelled a background preparation."""
+
+
+def download_video(url, quality=480, progress_callback=None, cancel_event=None):
     """Download and merge a video into the quality-specific MP4 cache file."""
     validated_url = validate_url(url)
     height = normalize_quality(quality)
-    clean_cache()
     video_id = video_id_from_url(validated_url)
-    if video_id:
-        cached_path = cache_path(video_id, height)
-        if cached_path.is_file():
-            return {**cached_video_info(cached_path, video_id), "path": cached_path, "cached": True}
-
-    require_ffmpeg()
-    info = get_info(validated_url)
-    video_id = info.get("id")
     if not video_id:
-        raise VideoUnavailableError("yt-dlp did not return a video ID for this URL.")
+        raise VideoUnavailableError("Could not determine the video ID.")
+    with _lock_for_video(video_id):
+        clean_cache()
+        output_path = cache_path(video_id, height)
+        if output_path.is_file():
+            return {**cached_video_info(output_path, video_id), "path": output_path, "cached": True}
 
-    output_path = cache_path(video_id, height)
-    if output_path.is_file():
-        return {**cached_video_info(output_path, video_id), "path": output_path, "cached": True}
+        require_ffmpeg()
+        info = _extract_info(validated_url)
+        video_id = info.get("id")
+        if not video_id:
+            raise VideoUnavailableError("yt-dlp did not return a video ID for this URL.")
+        metadata_seconds = info_timing(video_id)
+        if progress_callback:
+            progress_callback({
+                "stage": "metadata",
+                "timings": {"metadata_extraction_seconds": metadata_seconds},
+                "message": "Downloading video and audio...",
+            })
 
-    clean_cache()
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = cache_path(video_id, height)
+        if output_path.is_file():
+            return {**cached_video_info(output_path, video_id), "path": output_path, "cached": True}
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        started_at = time.perf_counter()
+        merge_started_at = None
+        timings = {"metadata_extraction_seconds": metadata_seconds}
+        downloaded_formats = {}
+        downloaded_formats_lock = threading.Lock()
 
-    def report(data):
-        if not progress_callback:
-            return
-        status = data.get("status")
-        if status == "downloading":
+        def check_cancelled():
+            if cancel_event is not None and cancel_event.is_set():
+                raise PreparationCancelled("Video preparation was cancelled.")
+
+        def report(data):
+            check_cancelled()
+            if not progress_callback or data.get("status") != "downloading":
+                return
+            format_id = str(data.get("format_id") or data.get("filename") or "video")
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
             downloaded = data.get("downloaded_bytes", 0)
-            percent = min(95, int(downloaded * 95 / total)) if total else 0
-            progress_callback({"progress": percent, "message": "Downloading video and audio..."})
+            with downloaded_formats_lock:
+                downloaded_formats[format_id] = (downloaded, total)
+                total_downloaded = sum(value[0] for value in downloaded_formats.values())
+                total_size = sum(value[1] for value in downloaded_formats.values() if value[1])
+            percent = min(95, int(total_downloaded * 95 / total_size)) if total_size else 0
+            details = [f"Downloading {percent}%"]
+            speed = _format_rate(data.get("speed"))
+            eta = _format_eta(data.get("eta"))
+            if speed:
+                details.append(speed)
+            if eta:
+                details.append(eta)
+            progress_callback({
+                "stage": "download",
+                "progress": percent,
+                "speed": data.get("speed"),
+                "eta": data.get("eta"),
+                "message": " · ".join(details),
+            })
 
-    def report_postprocessing(data):
-        if progress_callback and data.get("status") in {"started", "processing"}:
-            progress_callback({"progress": 97, "message": "Merging streams into MP4..."})
+        def report_postprocessing(data):
+            nonlocal merge_started_at
+            postprocessor = str(data.get("postprocessor", "")).lower()
+            if "merger" in postprocessor and data.get("status") == "started":
+                merge_started_at = time.perf_counter()
+                download_seconds = merge_started_at - started_at
+                timings["download_seconds"] = download_seconds
+                logger.info("Video timing id=%s stage=download seconds=%.3f", video_id, download_seconds)
+                if progress_callback:
+                    progress_callback({
+                        "stage": "merge",
+                        "progress": 97,
+                        "message": "Merging video and audio...",
+                        "timings": dict(timings),
+                    })
+            elif "merger" in postprocessor and data.get("status") == "finished" and merge_started_at is not None:
+                merge_seconds = time.perf_counter() - merge_started_at
+                timings["merge_seconds"] = merge_seconds
+                logger.info("Video timing id=%s stage=merge seconds=%.3f", video_id, merge_seconds)
+            if "convertor" in postprocessor or "re-encode" in postprocessor:
+                logger.warning("Video timing id=%s warning=ffmpeg_re-encode", video_id)
 
-    options = {
-        "format": format_selector(height),
-        "merge_output_format": "mp4",
-        "outtmpl": str(CACHE_DIR / f"{output_path.stem}.%(ext)s"),
-        "progress_hooks": [report],
-        "postprocessor_hooks": [report_postprocessing],
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(options) as downloader:
-            downloader.extract_info(validated_url, download=True)
-    except DownloadError as error:
-        message = str(error).strip() or error.__class__.__name__
-        lowered = message.lower()
-        if any(word in lowered for word in ("network", "connection", "timed out", "unable to download")):
-            raise NetworkError(message) from error
-        raise VideoUnavailableError(message) from error
-    except (OSError, TimeoutError) as error:
-        message = str(error).strip() or error.__class__.__name__
-        raise NetworkError(message) from error
+        options = {
+            "format": format_selector(height),
+            "merge_output_format": "mp4",
+            "outtmpl": str(CACHE_DIR / f"{output_path.stem}.%(ext)s"),
+            "progress_hooks": [report],
+            "postprocessor_hooks": [report_postprocessing],
+            "concurrent_fragment_downloads": 8,
+            "http_chunk_size": 10_485_760,
+            "retries": 5,
+            "fragment_retries": 5,
+            "cachedir": str(CACHE_DIR / "yt-dlp"),
+            "postprocessor_args": {
+                "merger+ffmpeg_o": ["-c", "copy", "-movflags", "+faststart"],
+            },
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+        }
+        if ARIA2C_PATH:
+            options["external_downloader"] = {"https": ARIA2C_PATH}
+            options["external_downloader_args"] = {
+                "aria2c": ["-x", "16", "-s", "16", "-k", "1M"],
+            }
+        else:
+            options["external_downloader"] = {"https": "ffmpeg"}
+            options["external_downloader_args"] = {
+                "ffmpeg": ["-movflags", "+faststart"],
+            }
 
-    if not output_path.is_file():
-        raise VideoUnavailableError(f"yt-dlp completed but did not create the expected MP4: {output_path.name}")
-    metadata_path = output_path.with_suffix(".json")
-    metadata = {
-        key: info.get(key)
-        for key in ("id", "title", "duration", "thumbnail", "channel", "view_count", "upload_date")
-    }
-    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    if progress_callback:
-        progress_callback({"progress": 100, "message": "Video ready."})
-    return {**info, "path": output_path, "cached": False}
+        with protect_cache_file(output_path):
+            clean_cache()
+            try:
+                check_cancelled()
+                with yt_dlp.YoutubeDL(options) as downloader:
+                    with _parallelize_format_downloads(downloader, info.get("requested_formats", [])):
+                        downloader.process_ie_result(deepcopy(info), download=True)
+                check_cancelled()
+            except PreparationCancelled:
+                raise
+            except DownloadError as error:
+                message = str(error).strip() or error.__class__.__name__
+                lowered = message.lower()
+                if any(word in lowered for word in ("network", "connection", "timed out", "unable to download")):
+                    raise NetworkError(message) from error
+                raise VideoUnavailableError(message) from error
+            except (OSError, TimeoutError) as error:
+                message = str(error).strip() or error.__class__.__name__
+                raise NetworkError(message) from error
+
+            if not output_path.is_file():
+                raise VideoUnavailableError(f"yt-dlp completed but did not create the expected MP4: {output_path.name}")
+            if merge_started_at is None:
+                timings["download_seconds"] = time.perf_counter() - started_at
+                logger.info(
+                    "Video timing id=%s stage=download seconds=%.3f",
+                    video_id,
+                    timings["download_seconds"],
+                )
+                if len(info.get("requested_formats", [])) > 1:
+                    timings["merge_seconds"] = 0.0
+                    logger.info(
+                        "Video timing id=%s stage=merge seconds=0.000 mode=parallel_mux",
+                        video_id,
+                    )
+            metadata_path = output_path.with_suffix(".json")
+            metadata = {
+                key: info.get(key)
+                for key in ("id", "title", "duration", "thumbnail", "channel", "view_count", "upload_date")
+            }
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            timings["total_preparation_seconds"] = time.perf_counter() - started_at
+            if progress_callback:
+                progress_callback({
+                    "stage": "ready",
+                    "progress": 100,
+                    "message": "Video ready.",
+                    "timings": dict(timings),
+                })
+            return {**info, "path": output_path, "cached": False, "timings": timings}

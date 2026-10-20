@@ -21,7 +21,8 @@ a YouTube video URL to open it directly. Search and playback stay on the same
 page; searches use the `?q=...` query and playback uses the player view. Search
 and watch history is stored in the browser, with controls to pause or clear it.
 Recommendation results are cached in the current tab for 10 minutes. Choose
-360p, 480p, or 720p in the player. Video and audio download in the background;
+360p, 480p, or 720p in the player (480p is the default, with per-video
+estimated sizes shown after metadata loads). Video and audio download in the background;
 the page shows progress and enables playback when the MP4 is ready. Search
 results are held in memory for 10 minutes. Non-media requests are limited to
 10 per minute per IP; video Range requests are exempt so seeking continues to
@@ -140,3 +141,17 @@ Test in this order:
    again to verify the selected quality is used. While a video is preparing,
    use either Download button and confirm **Video is still preparing** appears
    in the expanded Video status section.
+
+## Playback preparation timing and prefetch
+
+Preparation timing lines are written to the terminal running `python app.py`.
+Look for `Video timing` entries for `metadata_extraction`, `download`, `merge`,
+and `first_byte`. The `/api/status` JSON response includes the current timings;
+`time_to_first_byte_seconds` is populated after the first `/stream` byte has
+been sent. Progress status reports download percentage, speed, and remaining
+time while yt-dlp provides those values.
+
+To check early preparation, search for videos and hover the first result card
+with a mouse for just over 400 ms. Preparation starts in the background.
+Clicking a different video cancels that background job. Click a card directly
+to check that metadata lookup and preparation start immediately.
