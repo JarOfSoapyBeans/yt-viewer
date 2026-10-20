@@ -68,15 +68,17 @@
     .mobile-nav { display: none; }
     main { box-sizing: border-box; width: min(1120px, calc(100% - 264px)); margin: 5vh 20px 5vh calc(224px + max(20px, (100% - 224px - 1120px) / 2)); padding: 24px 0; border-top: 5px solid var(--accent); }
     body.sidebar-collapsed main { margin-left: calc(64px + max(20px, (100% - 64px - 1120px) / 2)); width: min(1120px, calc(100% - 104px)); }
-    h1 { margin: 0 0 24px; font: 700 clamp(2rem, 7vw, 4rem)/1 Georgia, serif; overflow-wrap: anywhere; }
+    h1 { margin: 0 0 12px; font: 700 clamp(2rem, 7vw, 4rem)/1 Georgia, serif; overflow-wrap: anywhere; }
     h1 a { color: var(--text); text-decoration: none; }
     h2 { margin: 0 0 16px; font-size: clamp(1.35rem, 4vw, 2rem); }
     form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 24px; }
     label { flex-basis: 100%; font-size: .85rem; font-weight: 700; }
-    input, select, button { box-sizing: border-box; min-height: 44px; border: 1px solid var(--border); border-radius: 3px; padding: 10px 12px; font: inherit; }
+    input, select, button { box-sizing: border-box; min-height: 44px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font: inherit; transition: background-color .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
     input { flex: 1 1 280px; min-width: 0; background: var(--surface); color: var(--text); }
-    select { background: var(--surface); color: var(--text); }
+    select { appearance: none; padding-right: 38px; background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%2387948a' stroke-width='2'/%3E%3C/svg%3E") no-repeat right 13px center / 12px 8px; color: var(--text); }
     button { background: var(--button); color: var(--button-text); cursor: pointer; }
+    button:hover:not(:disabled) { border-color: var(--accent); box-shadow: 0 2px 8px #1d2a2418; }
+    button:active:not(:disabled) { transform: translateY(1px); }
     button:disabled { cursor: wait; opacity: .65; }
     #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 20px; }
     .video-card { display: block; width: 100%; min-width: 0; padding: 0; overflow: hidden; border: 0; border-radius: 5px; background: var(--surface); color: inherit; text-align: left; box-shadow: 0 2px 8px #1d2a2418; }
@@ -132,7 +134,10 @@
     .settings-actions { display: flex; flex-wrap: wrap; gap: 10px; }
     .privacy-note { color: var(--muted); }
     .panel-backdrop { position: fixed; z-index: 6; inset: 0 0 0 224px; border: 0; border-radius: 0; background: #0007; }
-    .side-panel { position: fixed; z-index: 7; inset: 0 auto 0 224px; box-sizing: border-box; width: min(460px, calc(100vw - 224px)); overflow-y: auto; padding: 22px; border-right: 1px solid var(--border); background: var(--surface); box-shadow: 8px 0 30px #0002; transform: translateX(calc(-100% - 8px)); transition: transform .2s ease, left .18s ease; }
+    .side-panel { position: fixed; z-index: 7; inset: 0 auto 0 224px; box-sizing: border-box; width: min(460px, calc(100vw - 224px)); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--accent) var(--page-pattern); padding: 22px; border-right: 1px solid var(--border); background: var(--surface); box-shadow: 8px 0 30px #0002; transform: translateX(calc(-100% - 8px)); transition: transform .2s ease, left .18s ease; }
+    .side-panel::-webkit-scrollbar, main::-webkit-scrollbar { width: 9px; }
+    .side-panel::-webkit-scrollbar-track, main::-webkit-scrollbar-track { border-radius: 8px; background: var(--page-pattern); }
+    .side-panel::-webkit-scrollbar-thumb, main::-webkit-scrollbar-thumb { border: 2px solid var(--page-pattern); border-radius: 8px; background: var(--accent); }
     body.panel-open .side-panel:not([hidden]) { transform: translateX(0); }
     body.sidebar-collapsed .side-panel { left: 64px; width: min(460px, calc(100vw - 64px)); }
     body.sidebar-collapsed .panel-backdrop { left: 64px; }
@@ -150,11 +155,21 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     #search-message, #player-message { margin: 20px 0; }
     [role="alert"] { color: var(--danger); }
-    #player-view { max-width: 960px; }
-    #player-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
-    #player-controls label { flex: 0 0 auto; }
-    #video-player { display: block; width: 100%; aspect-ratio: 16 / 9; background: #101512; object-fit: contain; }
-    #preparing { display: grid; gap: 10px; max-width: 480px; margin: 24px 0; }
+    main { scrollbar-width: thin; scrollbar-color: var(--accent) var(--page-pattern); }
+    body { scrollbar-width: thin; scrollbar-color: var(--accent) var(--page-pattern); }
+    body::-webkit-scrollbar { width: 9px; }
+    body::-webkit-scrollbar-track { border-radius: 8px; background: var(--page-pattern); }
+    body::-webkit-scrollbar-thumb { border: 2px solid var(--page-pattern); border-radius: 8px; background: var(--accent); }
+    #player-view { width: 100%; max-width: none; }
+    #search-form { margin-bottom: 24px; }
+    #video-details { margin: 0 0 18px; }
+    #video-title { margin: 20px 0 5px; font-size: clamp(1.4rem, 3.5vw, 2.2rem); line-height: 1.2; overflow-wrap: anywhere; }
+    #video-channel { margin: 0 0 5px; font-weight: 650; }
+    #video-meta { margin: 0; color: var(--muted); font-size: .9rem; }
+    #player-details { margin-top: 18px; color: var(--muted); }
+    #player-details summary { width: fit-content; cursor: pointer; }
+    #preparing { display: grid; gap: 10px; max-width: 480px; margin: 12px 0; }
+    #player-message { margin: 12px 0; }
     progress { width: 100%; height: 12px; accent-color: var(--accent); }
     .skeleton { min-height: 230px; border-radius: 5px; background: linear-gradient(100deg, var(--page-pattern) 30%, var(--surface) 50%, var(--page-pattern) 70%); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
     @keyframes shimmer { to { background-position-x: -200%; } }
@@ -169,7 +184,10 @@
       .thumbnail { height: 100%; min-height: 95px; aspect-ratio: auto; }
       .card-copy { align-self: center; padding: 9px; }
       .card-title { min-height: 0; }
-      #player-controls label { flex-basis: auto; }
+      #player-actions { align-items: stretch; }
+      #player-actions > * { flex: 1 1 100%; width: 100%; }
+      #player-actions select { min-width: 0; }
+      #video-title { margin-top: 16px; }
       .history-entry { gap: 4px; padding: 7px; }
       .panel-backdrop { z-index: 10; inset: 0 0 70px; }
       .side-panel, body.sidebar-collapsed .side-panel { z-index: 11; inset: auto 0 70px; width: 100%; max-height: min(78vh, 720px); padding: 18px 16px max(18px, env(safe-area-inset-bottom)); border: 1px solid var(--border); border-radius: 16px 16px 0 0; box-shadow: 0 -8px 30px #0003; transform: translateY(110%); transition: transform .2s ease; }
@@ -178,6 +196,7 @@
     }
     @media (prefers-reduced-motion: reduce) { .skeleton, .spinner { animation: none; } }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='player-ui.css') }}">
 </head>
 <body>
   <aside id="sidebar" class="sidebar" aria-label="Main navigation">
@@ -212,16 +231,16 @@
   </nav>
   <button id="panel-backdrop" class="panel-backdrop" type="button" aria-label="Close panel" hidden></button>
   <main>
-    <h1 id="page-title"><a href="/" aria-label="YouTube Viewer home">YouTube Viewer</a></h1>
+    <h1 id="page-title"><a href="/" aria-label="YouTube Viewer home">YOUTUBE VIEWER</a></h1>
     {% if ffmpeg_warning %}<p role="alert">{{ ffmpeg_warning }}</p>{% endif %}
     {% if error %}<p role="alert">{{ error }}</p>{% endif %}
-    <form id="search-form">
-      <label for="search-query">Search YouTube videos</label>
-      <input id="search-query" name="q" type="search" autocomplete="off" placeholder="Search videos or paste a YouTube link">
-      <button id="search-submit" type="submit">Search</button>
-    </form>
-    <p id="search-message" aria-live="polite" hidden></p>
     <section id="search-view" {% if watching %}hidden{% endif %}>
+      <form id="search-form">
+        <label for="search-query">Search YouTube videos</label>
+        <input id="search-query" name="q" type="search" autocomplete="off" placeholder="Search videos or paste a YouTube link">
+        <button id="search-submit" class="primary-button" type="submit">Search</button>
+      </form>
+      <p id="search-message" aria-live="polite" hidden></p>
       <div id="home-feed" hidden>
         <div class="history-controls">
           <label><input id="pause-history-home" type="checkbox"> Pause history</label>
@@ -311,24 +330,105 @@
       <button id="reset-settings" type="button">Reset to defaults</button>
     </section>
     <section id="player-view" {% if not watching %}hidden{% endif %}>
-      <button id="back-to-results" type="button">Back to results</button>
-      <h2 id="video-title">{{ title or '' }}</h2>
-      <div id="player-controls">
-        <label for="quality">Quality</label>
-        <select id="quality">
-          {% for option in qualities %}
-            <option value="{{ option }}" {% if option == quality %}selected{% endif %}>{{ option }}p</option>
-          {% endfor %}
-        </select>
+      <div id="video-shell" class="video-shell" tabindex="0" aria-label="Video player">
+        <video id="video-player" playsinline preload="metadata"></video>
+        <div id="buffering-indicator" class="buffering-indicator" role="status" aria-label="Buffering video" hidden><span></span></div>
+        <div id="player-error" class="player-error" role="alert" hidden>
+          <p id="player-error-message">Video could not be loaded.</p>
+          <button id="player-retry" type="button" class="primary-button">Retry</button>
+        </div>
+        <button id="center-play" class="center-play" type="button" aria-label="Play video" hidden>
+          <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 12 7-12 7z"></path></svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM15 5h4v14h-4z"></path></svg>
+        </button>
+        <div id="player-controls" class="player-control-bar" aria-label="Video controls">
+          <div class="seek-area">
+            <div id="seek-tooltip" class="seek-tooltip" aria-hidden="true">0:00</div>
+            <div id="seek-slider" class="seek-slider" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="0:00">
+              <div class="seek-track">
+                <div id="seek-buffered" class="seek-buffered"></div>
+                <div id="seek-played" class="seek-played"></div>
+                <div id="seek-thumb" class="seek-thumb"></div>
+              </div>
+            </div>
+          </div>
+          <div class="control-row">
+            <div class="control-group">
+              <button id="play-toggle" class="control-button" type="button" aria-label="Play" title="Play / pause (Space or K)">
+                <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 12 7-12 7z"></path></svg>
+                <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM15 5h4v14h-4z"></path></svg>
+              </button>
+              <button id="skip-back" class="control-button" type="button" aria-label="Skip back 10 seconds" title="Skip back 10 seconds">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4m0 4h4M4.8 8A8 8 0 1 1 4 13"></path><text x="7" y="16" class="icon-text">10</text></svg>
+              </button>
+              <button id="skip-forward" class="control-button" type="button" aria-label="Skip forward 10 seconds" title="Skip forward 10 seconds">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8V4m0 4h-4m3.2 0A8 8 0 1 0 20 13"></path><text x="7" y="16" class="icon-text">10</text></svg>
+              </button>
+              <button id="player-download" class="control-button" type="button" aria-label="Download" title="Download video">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"></path></svg>
+              </button>
+              <div class="volume-control">
+                <button id="mute-toggle" class="control-button" type="button" aria-label="Mute" title="Mute (M)">
+                  <svg class="icon-volume" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9z"></path><path class="volume-wave" d="M16 9a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12"></path><path class="volume-muted" d="m16 9 5 6m0-6-5 6"></path></svg>
+                </button>
+                <div id="volume-slider" class="volume-slider" role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" aria-valuetext="100%">
+                  <div class="volume-track"><div id="volume-level"></div></div>
+                </div>
+              </div>
+              <span id="time-display" class="time-display" aria-live="off">0:00 / 0:00</span>
+            </div>
+            <div class="control-group control-group-end">
+              <label class="compact-select"><span class="visually-hidden">Playback speed</span>
+                <select id="player-speed" aria-label="Playback speed">
+                  <option value="0.5">0.5x</option><option value="0.75">0.75x</option><option value="1" selected>1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="1.75">1.75x</option><option value="2">2x</option>
+                </select>
+              </label>
+              <button id="pip-toggle" class="control-button" type="button" aria-label="Enter picture-in-picture" title="Picture-in-picture">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"></path><path d="M12 12h6v4h-6z"></path></svg>
+              </button>
+              <button id="fullscreen-toggle" class="control-button" type="button" aria-label="Enter fullscreen" title="Fullscreen (F)">
+                <svg class="icon-fullscreen" viewBox="0 0 24 24" aria-hidden="true"><path class="enter-fullscreen" d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"></path><path class="exit-fullscreen" d="M9 4v5H4m11-5v5h5m-5 11v-5h5M9 20v-5H4"></path></svg>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
-      <section id="preparing" aria-live="polite">
-        <strong id="status-message">Preparing video...</strong>
-        <progress id="download-progress" max="100" value="0"></progress>
-      </section>
-      <p id="player-message" role="alert" hidden></p>
-      <video id="video-player" controls playsinline preload="metadata" hidden></video>
+      <div id="video-details">
+        <h2 id="video-title">{{ title or '' }}</h2>
+        <p id="video-channel"></p>
+        <p id="video-meta"></p>
+      </div>
+      <div id="player-actions" class="player-actions">
+        <button id="back-to-results" class="primary-button back-button" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-7 7 7 7M7 12h13"></path></svg>
+          <span>Back to results</span>
+        </button>
+        <button id="action-download" class="primary-button" type="button" aria-label="Download">Download</button>
+        <label class="action-select"><span>Quality</span>
+          <select id="quality">
+            {% for option in qualities %}
+              <option value="{{ option }}" {% if option == quality %}selected{% endif %}>{{ option }}p</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="action-select"><span>Playback speed</span>
+          <select id="action-speed" aria-label="Playback speed">
+            <option value="0.5">0.5x</option><option value="0.75">0.75x</option><option value="1" selected>1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="1.75">1.75x</option><option value="2">2x</option>
+          </select>
+        </label>
+      </div>
+      <details id="player-details" class="player-details">
+        <summary id="player-status-summary">Video status</summary>
+        <p id="player-download-message" aria-live="polite" hidden></p>
+        <section id="preparing" aria-live="polite">
+          <strong id="status-message">Preparing video...</strong>
+          <progress id="download-progress" max="100" value="0"></progress>
+        </section>
+        <p id="player-message" role="alert" hidden></p>
+      </details>
     </section>
   </main>
+  <script src="{{ url_for('static', filename='player-ui.js') }}"></script>
   <script>
     const initialWatching = {{ watching|tojson }};
     const initialVideoUrl = {{ video_url|tojson }};
@@ -350,6 +450,7 @@
     const preparation = document.getElementById('preparing');
     const playerMessage = document.getElementById('player-message');
     const video = document.getElementById('video-player');
+    const playerStatusSummary = document.getElementById('player-status-summary');
     const resultStates = new Map();
     let currentQuery = '';
     let currentLimit = 12;
@@ -522,6 +623,7 @@
       document.documentElement.dataset.theme = settings.theme;
       document.getElementById('setting-theme').value = settings.theme;
       document.getElementById('setting-quality').value = settings.quality;
+      if (!initialWatching) qualitySelect.value = settings.quality;
       document.getElementById('setting-autoplay').checked = settings.autoplay;
       document.getElementById('setting-batch-size').value = String(settings.batchSize);
       document.getElementById('setting-recommendations').checked = settings.recommendations;
@@ -562,7 +664,7 @@
       storage.remove('yt-viewer-history-paused-v1');
       writeHistory(readHistory());
       applySettings();
-      qualitySelect.value = settings.quality;
+      if (!initialWatching) qualitySelect.value = settings.quality;
     }
 
     function setActiveNavigation(view) {
@@ -1393,13 +1495,15 @@
       currentVideoId = videoId;
       video.pause();
       video.removeAttribute('src');
-      video.hidden = true;
       video.load();
       preparation.hidden = false;
       playerMessage.hidden = true;
       progress.hidden = false;
       progress.value = 0;
       statusMessage.textContent = 'Preparing video...';
+      playerStatusSummary.textContent = 'Video status — Preparing video...';
+      video.closest('.video-shell').classList.remove('is-ready', 'controls-hidden');
+      window.playerUI.clearError();
       const url = statusUrl || `/api/status?${new URLSearchParams({ url: videoId, quality: String(selectedQuality) })}`;
       async function pollStatus() {
         try {
@@ -1407,11 +1511,12 @@
           const state = await response.json();
           if (!response.ok) throw new Error(state.error || 'Could not check video status.');
           statusMessage.textContent = state.message || 'Preparing video...';
+          playerStatusSummary.textContent = `Video status — ${statusMessage.textContent}`;
           progress.value = state.progress || 0;
           if (state.status === 'ready') {
             videoTitle.textContent = state.title || videoTitle.textContent;
             video.src = state.stream_url;
-            video.hidden = false;
+            playerStatusSummary.textContent = 'Video status — Ready.';
             preparation.hidden = true;
             video.load();
             if (settings.autoplay) video.play().catch(() => {});
@@ -1421,11 +1526,45 @@
           statusTimer = window.setTimeout(pollStatus, 9000);
         } catch (error) {
           statusMessage.textContent = error.message;
+          playerStatusSummary.textContent = `Video status — ${error.message}`;
           progress.hidden = true;
+          window.playerUI.showError(error.message);
         }
       }
       pollStatus();
     }
+    window.playerUI.setRetryHandler(() => {
+      if (currentVideoId) startPlayback(currentVideoId, qualitySelect.value);
+    });
+    window.playerUI.setDownloadHandler(async () => {
+      if (!currentVideoId) {
+        window.playerUI.showDownloadMessage('Video is still preparing');
+        return;
+      }
+      const downloadUrl = `/download?${new URLSearchParams({
+        id: currentVideoId,
+        quality: qualitySelect.value
+      })}`;
+      window.playerUI.clearDownloadMessage();
+      try {
+        const response = await fetch(downloadUrl, { method: 'HEAD', cache: 'no-store' });
+        if (response.status === 409) {
+          window.playerUI.showDownloadMessage('Video is still preparing');
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(`Download failed (${response.status}).`);
+        }
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.hidden = true;
+        document.body.append(link);
+        link.click();
+        link.remove();
+      } catch (error) {
+        window.playerUI.showDownloadMessage(error.message || 'Could not start the download.');
+      }
+    });
 
     async function loadVideoTitle(videoId) {
       try {
@@ -1433,6 +1572,7 @@
         const info = await response.json();
         if (!response.ok) throw new Error(info.error || 'Could not load video information.');
         if (info.title) videoTitle.textContent = info.title;
+        window.playerUI.setMetadata(info);
         addVideoToHistory(info);
       } catch (error) {
         playerMessage.textContent = error.message || 'Could not load video information.';
@@ -1448,6 +1588,7 @@
       if (item) addVideoToHistory({ ...item, id: videoId, title: title || item.title });
       currentVideoId = videoId;
       videoTitle.textContent = title || 'Preparing video...';
+      if (item) window.playerUI.setMetadata(item);
       activeView = 'home';
       setActiveNavigation('home');
       searchView.hidden = true;

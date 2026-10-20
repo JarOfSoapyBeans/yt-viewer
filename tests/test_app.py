@@ -17,6 +17,21 @@ def test_index_shows_quality_options_and_ffmpeg_warning(monkeypatch):
     assert b"Install ffmpeg" in response.data
 
 
+def test_player_ui_assets_and_custom_video_markup_are_present():
+    client = app.test_client()
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b"/static/player-ui.css" in response.data
+    assert b"/static/player-ui.js" in response.data
+    assert client.get("/static/player-ui.css").status_code == 200
+    assert client.get("/static/player-ui.js").status_code == 200
+    assert b'<video id="video-player" playsinline preload="metadata"></video>' in response.data
+    assert b'<video id="video-player" controls' not in response.data
+    assert b'id="seek-slider"' in response.data
+    assert b'id="player-speed"' in response.data
+
+
 def test_watch_starts_background_preparation(monkeypatch):
     started = {}
 
@@ -393,3 +408,69 @@ def test_stream_returns_not_found_before_video_is_ready(tmp_path, monkeypatch):
     response = app.test_client().get("/stream", query_string={"id": "abc123", "quality": "720"})
 
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ('A <great>: "video"/name?*', "A great videoname.mp4"),
+        ("CON", "_CON.mp4"),
+        ("x" * 105, f'{"x" * 100}.mp4'),
+        (' .<>:"/\\|?* ', "video.mp4"),
+    ],
+)
+def test_download_filename_is_safe_for_windows(title, expected):
+    assert app_module.clean_download_filename(title) == expected
+
+
+@pytest.mark.parametrize(
+    ("video_id", "quality"),
+    [
+        ("short", "720"),
+        ("abcdefghij!", "720"),
+        ("abcdefghijk", "1080"),
+        ("abcdefghijk", "480p"),
+    ],
+)
+def test_download_rejects_invalid_video_id_or_quality(video_id, quality):
+    response = app.test_client().get(
+        "/download",
+        query_string={"id": video_id, "quality": quality},
+        environ_base={"REMOTE_ADDR": "192.0.2.101"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_download_returns_conflict_while_video_is_preparing(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "cache_path", lambda video_id, quality: tmp_path / "missing.mp4")
+
+    response = app.test_client().get(
+        "/download",
+        query_string={"id": "abcdefghijk", "quality": "720"},
+        environ_base={"REMOTE_ADDR": "192.0.2.102"},
+    )
+
+    assert response.status_code == 409
+    assert response.get_data(as_text=True) == "Video is still preparing."
+
+
+def test_download_serves_cached_video_as_attachment_with_clean_title(tmp_path, monkeypatch):
+    video_file = tmp_path / "abcdefghijk_480p.mp4"
+    video_file.write_bytes(b"cached mp4")
+    video_file.with_suffix(".json").write_text(
+        '{"id":"abcdefghijk","title":"A <video>: file/name?"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_module, "cache_path", lambda video_id, quality: video_file)
+
+    response = app.test_client().get(
+        "/download",
+        query_string={"id": "abcdefghijk", "quality": "480"},
+        environ_base={"REMOTE_ADDR": "192.0.2.103"},
+    )
+
+    assert response.status_code == 200
+    assert response.data == b"cached mp4"
+    assert response.headers["Content-Type"].startswith("video/mp4")
+    assert response.headers["Content-Disposition"] == 'attachment; filename="A video filename.mp4"'

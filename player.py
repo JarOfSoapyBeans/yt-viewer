@@ -238,8 +238,16 @@ def video_id_from_url(url):
     return None
 
 
-def _cached_video_info(output_path, video_id):
-    fallback = {"id": video_id, "title": video_id, "duration": None, "thumbnail": None}
+def cached_video_info(output_path, video_id):
+    fallback = {
+        "id": video_id,
+        "title": video_id,
+        "duration": None,
+        "thumbnail": None,
+        "channel": None,
+        "view_count": None,
+        "upload_date": None,
+    }
     metadata_path = output_path.with_suffix(".json")
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -279,6 +287,9 @@ def get_info(url):
         "title": info.get("title") or "Untitled video",
         "duration": info.get("duration"),
         "thumbnail": info.get("thumbnail"),
+        "channel": info.get("channel") or info.get("uploader"),
+        "view_count": info.get("view_count"),
+        "upload_date": info.get("upload_date"),
     }
 
 
@@ -291,7 +302,7 @@ def download_video(url, quality=720, progress_callback=None):
     if video_id:
         cached_path = cache_path(video_id, height)
         if cached_path.is_file():
-            return {**_cached_video_info(cached_path, video_id), "path": cached_path, "cached": True}
+            return {**cached_video_info(cached_path, video_id), "path": cached_path, "cached": True}
 
     require_ffmpeg()
     info = get_info(validated_url)
@@ -301,7 +312,7 @@ def download_video(url, quality=720, progress_callback=None):
 
     output_path = cache_path(video_id, height)
     if output_path.is_file():
-        return {**_cached_video_info(output_path, video_id), "path": output_path, "cached": True}
+        return {**cached_video_info(output_path, video_id), "path": output_path, "cached": True}
 
     clean_cache()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -346,7 +357,10 @@ def download_video(url, quality=720, progress_callback=None):
     if not output_path.is_file():
         raise VideoUnavailableError(f"yt-dlp completed but did not create the expected MP4: {output_path.name}")
     metadata_path = output_path.with_suffix(".json")
-    metadata = {key: info.get(key) for key in ("id", "title", "duration", "thumbnail")}
+    metadata = {
+        key: info.get(key)
+        for key in ("id", "title", "duration", "thumbnail", "channel", "view_count", "upload_date")
+    }
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     if progress_callback:
         progress_callback({"progress": 100, "message": "Video ready."})

@@ -1,6 +1,7 @@
 """Flask web interface for preparing and playing cached YouTube videos."""
 
 import hashlib
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -11,6 +12,7 @@ from waitress import serve
 from player import (
     PlayerError,
     QUALITIES,
+    cached_video_info,
     cache_path,
     clean_cache,
     download_video,
@@ -82,6 +84,21 @@ def _render_index(**context):
 def _job_key(video_url, quality):
     value = f"{video_url}\0{quality}".encode("utf-8")
     return hashlib.sha256(value).hexdigest()
+
+
+def clean_download_filename(title):
+    """Return a Windows-safe MP4 filename based on a video title."""
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(title or ""))
+    filename = filename.strip().rstrip(".")[:100].strip().rstrip(".")
+    if not filename:
+        filename = "video"
+    if filename.upper().split(".", 1)[0] in {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{number}" for number in range(1, 10)),
+        *(f"LPT{number}" for number in range(1, 10)),
+    }:
+        filename = f"_{filename}"
+    return f"{filename}.mp4"
 
 
 def _update_progress(key, data):
@@ -224,6 +241,43 @@ def stream():
     if not path.is_file():
         return "Prepared video is not in the cache.", 404
     return send_file(path, mimetype="video/mp4", conditional=True, etag=True, max_age=0)
+
+
+@app.get("/download")
+def download():
+    video_id = request.args.get("id", "")
+    requested_quality = request.args.get("quality", "720")
+    if requested_quality not in {str(option) for option in QUALITIES}:
+        error = "Choose 360p, 480p, or 720p."
+        app.logger.warning("Rejected download quality %r: %s", requested_quality, error)
+        return error, 400
+    try:
+        quality = normalize_quality(requested_quality)
+    except ValueError as error:
+        app.logger.warning("Rejected download quality %r: %s", request.args.get("quality"), error)
+        return str(error), 400
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+        app.logger.warning("Rejected invalid download video ID %r", video_id)
+        return "Video ID must be exactly 11 letters, numbers, hyphens, or underscores.", 400
+
+    try:
+        path = cache_path(video_id, quality)
+        if not path.is_file():
+            app.logger.info("Download requested before video %s at quality %sp is ready", video_id, quality)
+            return "Video is still preparing.", 409
+        if request.method == "HEAD":
+            return "", 200
+        metadata = cached_video_info(path, video_id)
+        return send_file(
+            path,
+            mimetype="video/mp4",
+            as_attachment=True,
+            download_name=clean_download_filename(metadata.get("title")),
+        )
+    except OSError:
+        app.logger.exception("Could not serve download for video %s at quality %sp", video_id, quality)
+        return "Could not prepare the video download.", 500
 
 
 def run():

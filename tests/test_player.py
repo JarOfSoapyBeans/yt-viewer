@@ -11,9 +11,38 @@ from player import (
     clean_cache,
     download_video,
     format_selector,
+    get_info,
     search_videos,
     validate_url,
 )
+
+
+def test_get_info_includes_video_details_for_player_view(monkeypatch):
+    monkeypatch.setattr(
+        player,
+        "_extract_info",
+        lambda url: {
+            "id": "abcdefghijk",
+            "title": "Example video",
+            "duration": 120,
+            "thumbnail": "https://example.test/thumb.jpg",
+            "uploader": "Example channel",
+            "view_count": 1234,
+            "upload_date": "20250102",
+        },
+    )
+
+    info = get_info("abcdefghijk")
+
+    assert info == {
+        "id": "abcdefghijk",
+        "title": "Example video",
+        "duration": 120,
+        "thumbnail": "https://example.test/thumb.jpg",
+        "channel": "Example channel",
+        "view_count": 1234,
+        "upload_date": "20250102",
+    }
 
 
 @pytest.mark.parametrize(

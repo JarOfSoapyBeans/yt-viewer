@@ -107,3 +107,36 @@ Test in this order:
    one item, and **Clear all** with both confirmation choices. Verify row
    clicks open playback or rerun a search and close the panel, and that empty
    states appear after clearing.
+
+## Player UI smoke test
+
+1. Open a video from search. Confirm the page title is followed closely by a
+   16:9 black player, then the video title/details and the **Back to results**,
+   quality, and playback-speed controls. Confirm the sidebar remains available.
+   At phone width, verify the player/actions stack and the action buttons fill
+   the content width.
+2. With autoplay off, confirm the existing “Preparing video...” progress is
+   available in the collapsed **Video status** section and that the player
+   becomes ready without changing the `/api/status` then `/stream` flow.
+   Expand the section to inspect progress. Change quality and confirm the
+   existing preparation starts again at the selected quality.
+3. Use the player overlay to play/pause, drag or click the seek bar, skip
+   backward/forward, adjust volume, change speed, enter picture-in-picture
+   where supported, and enter/exit fullscreen. In the Network panel, confirm
+   seeking requests `/stream` with a `Range` header and receives partial
+   content. Hover or touch to show the controls and wait 2.5 seconds while
+   playing to confirm they fade away; pause to confirm they stay visible.
+4. Focus the player and test Space/K, Left/Right, J/L, Up/Down, M, F, and
+   number keys 0–9. Focus the search field and confirm typing does not trigger
+   player shortcuts. Refresh and verify volume, mute, and speed are remembered.
+5. Simulate a stream failure (for example, use the browser Network panel to
+   block the `/stream` request) and confirm the error overlay offers **Retry**.
+   Check the accent-colored scrollbar in the main page and the History and
+   Settings panels, and enable reduced motion in the OS/browser to verify
+   fades and transitions are disabled.
+6. Right-click the video picture (not a control) and confirm the browser offers
+   **Save video as**. Test both **Download** buttons with the video ready and
+   confirm the MP4 name is based on the title. Change quality and download
+   again to verify the selected quality is used. While a video is preparing,
+   use either Download button and confirm **Video is still preparing** appears
+   in the expanded Video status section.
