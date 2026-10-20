@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yt-viewer-shell-v1';
+const CACHE_NAME = 'yt-viewer-shell-v2';
 const SHELL_PATHS = new Set([
   '/',
   '/static/player-ui.css',
@@ -11,7 +11,8 @@ const SHELL_PATHS = new Set([
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll([...SHELL_PATHS]))
+      .then((cache) => cache.addAll([...SHELL_PATHS].map((path) => new Request(path, { cache: 'reload' }))))
+      .catch(() => {})
       .then(() => self.skipWaiting())
   );
 });
@@ -19,7 +20,9 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((names) => Promise.all(names.filter((name) => name.startsWith('yt-viewer-shell-') && name !== CACHE_NAME).map((name) => caches.delete(name))))
+      .then((names) => Promise.all(names
+        .filter((name) => name.startsWith('yt-viewer-shell-') && name !== CACHE_NAME)
+        .map((name) => caches.delete(name))))
       .then(() => self.clients.claim())
   );
 });
@@ -29,15 +32,20 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || ['/stream', '/download', '/api'].includes(url.pathname) || url.pathname.startsWith('/api/')) return;
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname === '/stream' || url.pathname === '/download' || url.pathname === '/health' ||
+      url.pathname.startsWith('/api/')) return;
   if (!SHELL_PATHS.has(url.pathname)) return;
 
+  const cacheKey = url.pathname;
   event.respondWith((async () => {
     const cache = await caches.open(CACHE_NAME);
-    const cached = await cache.match(url.pathname === '/' ? '/' : request);
-    if (cached) return cached;
-    const response = await fetch(request);
-    if (response.ok) await cache.put(url.pathname === '/' ? '/' : request, response.clone());
-    return response;
+    try {
+      const response = await fetch(request);
+      if (response.ok) await cache.put(cacheKey, response.clone());
+      return response;
+    } catch (_) {
+      return (await cache.match(cacheKey)) || Response.error();
+    }
   })());
 });

@@ -60,6 +60,45 @@ class FFmpegNotFoundError(PlayerError):
     """ffmpeg is required to merge video and audio streams."""
 
 
+class YouTubeHTTPError(PlayerError):
+    """YouTube refused a request with an HTTP status that may be retried."""
+
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _http_status_code(message):
+    match = re.search(r"(?:HTTP\s+Error\s+|HTTP\s+|status(?:\s+code)?\s*[:= ]\s*)(403|429)\b", str(message), re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _raise_for_youtube_http_error(error):
+    message = str(error).strip() or error.__class__.__name__
+    status_code = _http_status_code(message) or getattr(error, "code", None)
+    if status_code in {403, 429}:
+        raise YouTubeHTTPError(f"YouTube is refusing the request (HTTP {status_code}).", status_code) from error
+    return message
+
+
+def _clear_info_cache(video_id):
+    with _info_cache_lock:
+        _info_cache.pop(str(video_id), None)
+
+
+def _remove_incomplete_video_files(video_id, quality):
+    target = cache_path(video_id, quality)
+    if not CACHE_DIR.exists():
+        return
+    for path in CACHE_DIR.glob(f"{target.stem}*"):
+        with _cache_activity_lock:
+            if path.is_file() and not _cache_path_is_protected(path):
+                try:
+                    path.unlink()
+                except OSError:
+                    logger.warning("Could not remove an incomplete video file for %s", video_id)
+
+
 def validate_url(url):
     """Return a normalized URL if it points to a supported YouTube host."""
     if not isinstance(url, str) or not url.strip():
@@ -349,7 +388,7 @@ def cache_stats():
         return 0, 0
     total_bytes = 0
     file_count = 0
-    for path in CACHE_DIR.rglob("*"):
+    for path in CACHE_DIR.iterdir():
         try:
             if path.is_file():
                 total_bytes += path.stat().st_size
@@ -364,7 +403,7 @@ def clear_cache():
     if not CACHE_DIR.exists():
         return 0
     removed = 0
-    for path in CACHE_DIR.rglob("*"):
+    for path in CACHE_DIR.iterdir():
         with _cache_activity_lock:
             if _cache_path_is_protected(path) or not path.is_file():
                 continue
@@ -469,7 +508,7 @@ def _extract_info_uncached(url):
         with yt_dlp.YoutubeDL(options) as downloader:
             info = downloader.extract_info(validated_url, download=False)
     except DownloadError as error:
-        message = str(error).strip() or error.__class__.__name__
+        message = _raise_for_youtube_http_error(error)
         lowered = message.lower()
         if any(word in lowered for word in ("network", "connection", "timed out", "unable to download")):
             raise NetworkError(message) from error
@@ -563,7 +602,7 @@ class PreparationCancelled(PlayerError):
     """The user cancelled a background preparation."""
 
 
-def download_video(url, quality=480, progress_callback=None, cancel_event=None):
+def _download_video_once(url, quality=480, progress_callback=None, cancel_event=None):
     """Download and merge a video into the quality-specific MP4 cache file."""
     validated_url = validate_url(url)
     height = normalize_quality(quality)
@@ -658,10 +697,11 @@ def download_video(url, quality=480, progress_callback=None, cancel_event=None):
             "outtmpl": str(CACHE_DIR / f"{output_path.stem}.%(ext)s"),
             "progress_hooks": [report],
             "postprocessor_hooks": [report_postprocessing],
-            "concurrent_fragment_downloads": 8,
+            "concurrent_fragment_downloads": 4,
             "http_chunk_size": 10_485_760,
             "retries": 5,
             "fragment_retries": 5,
+            "sleep_interval_requests": 0.5,
             "cachedir": str(CACHE_DIR / "yt-dlp"),
             "postprocessor_args": {
                 "merger+ffmpeg_o": ["-c", "copy", "-movflags", "+faststart"],
@@ -673,12 +713,7 @@ def download_video(url, quality=480, progress_callback=None, cancel_event=None):
         if ARIA2C_PATH:
             options["external_downloader"] = {"https": ARIA2C_PATH}
             options["external_downloader_args"] = {
-                "aria2c": ["-x", "16", "-s", "16", "-k", "1M"],
-            }
-        else:
-            options["external_downloader"] = {"https": "ffmpeg"}
-            options["external_downloader_args"] = {
-                "ffmpeg": ["-movflags", "+faststart"],
+                "aria2c": ["-x4", "-s4", "-k", "1M"],
             }
 
         with protect_cache_file(output_path):
@@ -692,7 +727,7 @@ def download_video(url, quality=480, progress_callback=None, cancel_event=None):
             except PreparationCancelled:
                 raise
             except DownloadError as error:
-                message = str(error).strip() or error.__class__.__name__
+                message = _raise_for_youtube_http_error(error)
                 lowered = message.lower()
                 if any(word in lowered for word in ("network", "connection", "timed out", "unable to download")):
                     raise NetworkError(message) from error
@@ -731,3 +766,25 @@ def download_video(url, quality=480, progress_callback=None, cancel_event=None):
                     "timings": dict(timings),
                 })
             return {**info, "path": output_path, "cached": False, "timings": timings}
+
+
+def download_video(url, quality=480, progress_callback=None, cancel_event=None):
+    """Prepare a video, refreshing expired URLs after YouTube 403/429 errors."""
+    validated_url = validate_url(url)
+    video_id = video_id_from_url(validated_url)
+    height = normalize_quality(quality)
+    delays = (2, 5, 10)
+    for attempt in range(len(delays) + 1):
+        try:
+            return _download_video_once(validated_url, height, progress_callback, cancel_event)
+        except YouTubeHTTPError:
+            if attempt >= len(delays):
+                raise
+            _remove_incomplete_video_files(video_id, height)
+            _clear_info_cache(video_id)
+            delay = delays[attempt]
+            if cancel_event is not None:
+                if cancel_event.wait(delay):
+                    raise PreparationCancelled("Video preparation was cancelled.")
+            else:
+                time.sleep(delay)

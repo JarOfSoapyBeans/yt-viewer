@@ -378,16 +378,27 @@
     speedSelect.value = String(video.playbackRate);
     actionSpeedSelect.value = String(video.playbackRate);
   });
-  video.addEventListener('error', () => {
+    video.addEventListener('error', async () => {
     if (!video.currentSrc) return;
-    const error = video.error;
+    const source = video.currentSrc;
+    const code = video.error?.code;
     const messages = {
       1: 'Video loading was cancelled.',
       2: 'A network error interrupted the video.',
       3: 'The video could not be decoded.',
       4: 'This video format is not supported.'
     };
-    showError(messages[error?.code] || 'Video could not be loaded.');
+    let message = messages[code] || 'Video could not be loaded.';
+    if (code === 2 || code === 4) {
+      try {
+        const probe = await fetch(source, { method: 'HEAD', cache: 'no-store' });
+        if (!probe.ok) message = `The server could not provide the video (HTTP ${probe.status}).`;
+      } catch (_) {
+        message = 'Could not reach the server.';
+      }
+    }
+    if (video.currentSrc !== source) return;
+    showError(message);
   });
   document.addEventListener('fullscreenchange', updateFullscreen);
   document.addEventListener('enterpictureinpicture', () => pipButton.setAttribute('aria-label', 'Exit picture-in-picture'));

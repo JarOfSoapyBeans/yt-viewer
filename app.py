@@ -96,9 +96,11 @@ _jobs = {}
 _jobs_lock = threading.Lock()
 _rate_windows = defaultdict(deque)
 _rate_lock = threading.Lock()
-RATE_LIMIT_REQUESTS = 10
-SEARCH_RATE_LIMIT_REQUESTS = 30
+PREPARE_RATE_LIMIT_REQUESTS = 12
+SEARCH_RATE_LIMIT_REQUESTS = 60
+FEED_RATE_LIMIT_REQUESTS = 20
 RATE_LIMIT_SECONDS = 60
+RATE_LIMIT_ENABLED = True
 clean_cache()
 FFMPEG_AVAILABLE = bool(ffmpeg_path())
 FFMPEG_WARNING = None if FFMPEG_AVAILABLE else (
@@ -116,7 +118,10 @@ def _read_server_settings():
             values = {}
         if not isinstance(values, dict):
             values = {}
-        return {"auto_update_ytdlp": values.get("auto_update_ytdlp") is not False}
+        return {
+            "auto_update_ytdlp": values.get("auto_update_ytdlp") is not False,
+            "RATE_LIMIT_ENABLED": values.get("RATE_LIMIT_ENABLED") is not False,
+        }
 
 
 def _write_server_settings(values):
@@ -124,6 +129,44 @@ def _write_server_settings(values):
         temporary_path = SETTINGS_PATH.with_suffix(".tmp")
         temporary_path.write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
         temporary_path.replace(SETTINGS_PATH)
+
+
+def _visitor_id():
+    cloudflare_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    forwarded_for = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+    return cloudflare_ip or forwarded_for or request.remote_addr or "unknown"
+
+
+def _rate_limit_response(bucket):
+    if not _read_server_settings()["RATE_LIMIT_ENABLED"]:
+        return None
+    limits = {
+        "prepare": PREPARE_RATE_LIMIT_REQUESTS,
+        "search": SEARCH_RATE_LIMIT_REQUESTS,
+        "feed": FEED_RATE_LIMIT_REQUESTS,
+    }
+    limit = limits[bucket]
+    visitor = _visitor_id()
+    now = time.monotonic()
+    with _rate_lock:
+        requests = _rate_windows[(visitor, bucket)]
+        while requests and now - requests[0] >= RATE_LIMIT_SECONDS:
+            requests.popleft()
+        if len(requests) >= limit:
+            retry_after = max(1, int(RATE_LIMIT_SECONDS - (now - requests[0])))
+            route = request.path
+            app.logger.warning(
+                "Rate limit hit route=%s bucket=%s visitor=%s",
+                route,
+                bucket,
+                visitor,
+            )
+            message = f"Rate limit exceeded for {bucket}. Try again shortly."
+            return jsonify(error=message, message=message, bucket=bucket), 429, {
+                "Retry-After": str(retry_after)
+            }
+        requests.append(now)
+    return None
 
 
 def _is_newer_version(installed, latest):
@@ -198,24 +241,13 @@ def _health_payload(full_details):
 
 @app.before_request
 def enforce_rate_limit():
-    if request.endpoint in {"stream", "static"}:
-        return None
-
-    client_ip = request.headers.get("CF-Connecting-IP", "").strip() or request.remote_addr or "unknown"
-    is_search = request.endpoint == "search"
-    rate_limit_requests = SEARCH_RATE_LIMIT_REQUESTS if is_search else RATE_LIMIT_REQUESTS
-    now = time.monotonic()
-    with _rate_lock:
-        requests = _rate_windows[(client_ip, is_search)]
-        while requests and now - requests[0] >= RATE_LIMIT_SECONDS:
-            requests.popleft()
-        if len(requests) >= rate_limit_requests:
-            retry_after = max(1, int(RATE_LIMIT_SECONDS - (now - requests[0])))
-            return jsonify(error="Rate limit exceeded. Try again shortly."), 429, {
-                "Retry-After": str(retry_after)
-            }
-        requests.append(now)
-    return None
+    bucket = {
+        "/api/search": "search",
+        "/api/channel": "search",
+        "/api/info": "search",
+        "/api/feed": "feed",
+    }.get(request.path)
+    return _rate_limit_response(bucket) if bucket else None
 
 
 def _render_index(**context):
@@ -330,6 +362,56 @@ def _start_job(video_url, quality, retry=False):
     return key
 
 
+def _start_preparation(video_url, quality, retry=True):
+    key = _job_key(video_url, quality)
+    video_id = video_id_from_url(video_url)
+    cached_path = cache_path(video_id, quality)
+    with _jobs_lock:
+        job = _jobs.get(key)
+        if job and job["status"] in {"preparing", "cancelling"}:
+            return key, None
+        if cached_path.is_file():
+            if not job or job["status"] != "ready":
+                metadata = cached_video_info(cached_path, video_id)
+                _jobs[key] = {
+                    "status": "ready",
+                    "progress": 100,
+                    "message": "Video ready.",
+                    "video_id": video_id,
+                    "title": metadata.get("title"),
+                    "timings": {},
+                }
+            return key, None
+        if job and job["status"] == "error" and not retry:
+            return key, None
+        limited = _rate_limit_response("prepare")
+        if limited:
+            return None, limited
+        _jobs[key] = {
+            "status": "preparing",
+            "progress": 0,
+            "message": "Preparing video...",
+            "timings": {},
+            "started_at": time.monotonic(),
+            "cancel_event": threading.Event(),
+        }
+        worker = threading.Thread(target=_prepare_video, args=(key, video_url, quality), daemon=True)
+        worker.start()
+    return key, None
+
+
+def _job_state(key, quality):
+    with _jobs_lock:
+        state = dict(_jobs[key])
+        state.pop("cancel_event", None)
+        state.pop("started_at", None)
+        state["timings"] = dict(state.get("timings", {}))
+        state["timings"].setdefault("time_to_first_byte_seconds", None)
+    if state["status"] == "ready":
+        state["stream_url"] = url_for("stream", id=state["video_id"], quality=quality)
+    return state
+
+
 @app.get("/")
 def index():
     return _render_index()
@@ -356,7 +438,8 @@ def update_settings():
     values = request.get_json(silent=True)
     if not isinstance(values, dict) or not isinstance(values.get("auto_update_ytdlp"), bool):
         return jsonify(error="auto_update_ytdlp must be a boolean."), 400
-    settings = {"auto_update_ytdlp": values["auto_update_ytdlp"]}
+    settings = _read_server_settings()
+    settings["auto_update_ytdlp"] = values["auto_update_ytdlp"]
     try:
         _write_server_settings(settings)
     except OSError:
@@ -388,13 +471,30 @@ def watch():
     except (PlayerError, ValueError) as error:
         return _render_index(error=str(error), video_url=video_url), 400
 
-    _start_job(video_url, quality, retry=True)
+    _, limited = _start_preparation(video_url, quality, retry=True)
+    if limited:
+        return limited
     return _render_index(
         video_url=video_url,
         quality=quality,
         watching=True,
         status_url=url_for("video_status", url=video_url, quality=quality),
     )
+
+
+@app.post("/api/prepare")
+def prepare_video():
+    values = request.get_json(silent=True) or request.values
+    video_url = values.get("url", "").strip()
+    try:
+        video_url = validate_url(video_url)
+        quality = normalize_quality(values.get("quality", "480"))
+    except (PlayerError, ValueError) as error:
+        return jsonify(status="error", error=str(error)), 400
+    key, limited = _start_preparation(video_url, quality, retry=True)
+    if limited:
+        return limited
+    return jsonify(_job_state(key, quality))
 
 
 @app.get("/api/status")
@@ -406,16 +506,25 @@ def video_status():
     except (PlayerError, ValueError) as error:
         return jsonify(status="error", error=str(error)), 400
 
-    key = _start_job(video_url, quality)
+    key = _job_key(video_url, quality)
     with _jobs_lock:
-        state = dict(_jobs[key])
-        state.pop("cancel_event", None)
-        state.pop("started_at", None)
-        state["timings"] = dict(state.get("timings", {}))
-        state["timings"].setdefault("time_to_first_byte_seconds", None)
-    if state["status"] == "ready":
+        has_job = key in _jobs
+    if has_job:
+        return jsonify(_job_state(key, quality))
+    cached_path = cache_path(video_id_from_url(video_url), quality)
+    if cached_path.is_file():
+        metadata = cached_video_info(cached_path, video_id_from_url(video_url))
+        state = {
+            "status": "ready",
+            "progress": 100,
+            "message": "Video ready.",
+            "video_id": video_id_from_url(video_url),
+            "title": metadata.get("title"),
+            "timings": {"time_to_first_byte_seconds": None},
+        }
         state["stream_url"] = url_for("stream", id=state["video_id"], quality=quality)
-    return jsonify(state)
+        return jsonify(state)
+    return jsonify(status="idle", message="No preparation has been started.", timings={})
 
 
 @app.get("/api/info")

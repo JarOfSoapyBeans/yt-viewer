@@ -1681,8 +1681,34 @@
       await search(query, 12, false, true);
     }
 
+    let playbackToken = 0;
+
+    async function requestPreparation(videoId, selectedQuality, token, attempt = 0) {
+      const response = await fetch('/api/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: videoId, quality: String(selectedQuality) })
+      });
+      if (response.status === 429 && attempt < 3) {
+        const wait = Math.min(60, Number(response.headers.get('Retry-After')) || 5);
+        for (let remaining = wait; remaining > 0; remaining -= 1) {
+          if (token !== playbackToken) return null;
+          statusMessage.textContent = `Too many requests, retrying in ${remaining}s`;
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        }
+        if (token !== playbackToken) return null;
+        return requestPreparation(videoId, selectedQuality, token, attempt + 1);
+      }
+      const state = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(state.error || state.message || `Could not start the video (${response.status}).`);
+      }
+      return state;
+    }
+
     function startPlayback(videoId, selectedQuality, statusUrl = '') {
       if (statusTimer) window.clearTimeout(statusTimer);
+      const token = ++playbackToken;
       currentVideoId = videoId;
       video.pause();
       video.removeAttribute('src');
@@ -1694,13 +1720,17 @@
       statusMessage.textContent = 'Preparing video...';
       timingDetails.textContent = '';
       playerStatusSummary.textContent = 'Video status — Preparing video...';
+      document.getElementById('player-details').open = true;
       video.closest('.video-shell').classList.remove('is-ready', 'controls-hidden');
       window.playerUI.clearError();
       const url = statusUrl || `/api/status?${new URLSearchParams({ url: videoId, quality: String(selectedQuality) })}`;
+
       async function pollStatus() {
+        if (token !== playbackToken) return;
         try {
           const response = await fetch(url, { cache: 'no-store' });
           const state = await response.json();
+          if (token !== playbackToken) return;
           if (!response.ok) throw new Error(state.error || 'Could not check video status.');
           statusMessage.textContent = state.message || 'Preparing video...';
           playerStatusSummary.textContent = `Video status — ${statusMessage.textContent}`;
@@ -1715,6 +1745,7 @@
             video.src = state.stream_url;
             playerStatusSummary.textContent = 'Video status — Ready.';
             preparation.hidden = true;
+            document.getElementById('player-details').open = false;
             video.load();
             if (settings.autoplay) video.play().catch(() => {});
             return;
@@ -1722,13 +1753,31 @@
           if (state.status === 'error') throw new Error(state.error || 'Video preparation failed.');
           statusTimer = window.setTimeout(pollStatus, 1000);
         } catch (error) {
+          if (token !== playbackToken) return;
           statusMessage.textContent = error.message;
           playerStatusSummary.textContent = `Video status — ${error.message}`;
           progress.hidden = true;
           window.playerUI.showError(error.message);
         }
       }
-      pollStatus();
+
+      async function begin() {
+        try {
+          if (!statusUrl) {
+            const state = await requestPreparation(videoId, selectedQuality, token);
+            if (token !== playbackToken || !state) return;
+          }
+          pollStatus();
+        } catch (error) {
+          if (token !== playbackToken) return;
+          statusMessage.textContent = error.message;
+          playerStatusSummary.textContent = `Video status — ${error.message}`;
+          progress.hidden = true;
+          window.playerUI.showError(error.message);
+        }
+      }
+      begin();
+    }
     }
     window.playerUI.setRetryHandler(() => {
       if (currentVideoId) startPlayback(currentVideoId, qualitySelect.value);
