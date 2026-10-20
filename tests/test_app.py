@@ -36,6 +36,20 @@ def test_player_ui_assets_and_custom_video_markup_are_present():
     assert b'id="player-speed"' in response.data
 
 
+def test_pwa_manifest_icons_and_service_worker_are_served_and_registered():
+    client = app.test_client()
+    page = client.get("/", environ_base={"REMOTE_ADDR": "192.0.2.219"})
+
+    assert b'rel="manifest"' in page.data
+    assert b"serviceWorker.register('/service-worker.js')" in page.data
+    assert client.get("/static/manifest.webmanifest").status_code == 200
+    assert client.get("/static/icons/icon-192.svg").status_code == 200
+    assert client.get("/static/icons/icon-512.svg").status_code == 200
+    worker = client.get("/service-worker.js", environ_base={"REMOTE_ADDR": "192.0.2.220"})
+    assert worker.status_code == 200
+    assert b"/stream" in worker.data and b"/download" in worker.data and b"/api/" in worker.data
+
+
 def test_watch_starts_background_preparation(monkeypatch):
     started = {}
 
@@ -134,12 +148,118 @@ def test_run_uses_waitress_on_loopback_with_debug_disabled(monkeypatch):
         captured.update(app=flask_app, options=options)
 
     monkeypatch.setattr(app_module, "serve", fake_serve)
+    monkeypatch.setattr(app_module, "_start_ytdlp_update_if_enabled", lambda: None)
 
     app_module.run()
 
     assert app.debug is False
     assert captured["app"] is app
     assert captured["options"] == {"host": "127.0.0.1", "port": 5000, "threads": 8}
+
+
+@pytest.mark.parametrize(
+    ("installed", "latest", "expected"),
+    [
+        ("2025.01.01", "2025.02.01", True),
+        ("2025.02.01", "2025.01.01", False),
+        ("2025.01.01", "2025.01.01", False),
+        ("2025.01.01", "not-a-version", False),
+    ],
+)
+def test_ytdlp_version_comparison(installed, latest, expected):
+    assert app_module._is_newer_version(installed, latest) is expected
+
+
+def test_recent_error_buffer_keeps_only_five_sanitized_entries():
+    errors = app_module.RecentErrors()
+    for number in range(7):
+        errors.add(f"failure {number}", timestamp=f"2026-10-20T00:00:0{number}+00:00")
+    errors.add("failed https://example.test/private /usr/local/alice/file user=alice")
+    errors.add("cookie=session=secret; other=secret")
+
+    entries = errors.snapshot()
+    assert len(entries) == 5
+    assert entries[0]["message"] == "failure 4"
+    assert entries[-2]["message"] == "failed [url] [path] user=[redacted]"
+    assert entries[-1]["message"] == "cookie=[redacted]"
+
+
+def test_ytdlp_update_checks_pypi_and_runs_pip_only_for_newer_version(monkeypatch):
+    import io
+    import json
+
+    monkeypatch.setattr(app_module.yt_dlp.version, "__version__", "2025.01.01")
+    monkeypatch.setattr(
+        app_module,
+        "urlopen",
+        lambda *args, **kwargs: io.BytesIO(json.dumps({"info": {"version": "2026.01.01"}}).encode()),
+    )
+    calls = []
+    monkeypatch.setattr(app_module.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)))
+
+    app_module._check_for_ytdlp_update()
+
+    assert calls[0][0][-5:] == ["-m", "pip", "install", "-U", "yt-dlp"]
+    assert calls[0][1]["check"] is True
+
+
+def test_ytdlp_update_failure_is_quiet(monkeypatch, caplog):
+    monkeypatch.setattr(app_module, "urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")))
+
+    app_module._check_for_ytdlp_update()
+
+    assert "yt-dlp auto-update skipped: OSError" in caplog.text
+
+
+def test_health_limits_tunnel_response_to_versions_and_statuses(monkeypatch):
+    monkeypatch.setattr(app_module, "_installed_ytdlp_version", lambda: "2026.01.01")
+    client = app.test_client()
+
+    local = client.get("/health", environ_base={"REMOTE_ADDR": "127.0.0.2"}).get_json()
+    tunneled = client.get(
+        "/health",
+        environ_base={"REMOTE_ADDR": "127.0.0.2"},
+        headers={"CF-Connecting-IP": "203.0.113.5"},
+    ).get_json()
+
+    assert "disk_free_bytes" in local
+    assert set(tunneled) == {"yt_dlp", "ffmpeg", "deno", "aria2c"}
+    assert tunneled["yt_dlp"] == {"version": "2026.01.01"}
+
+
+def test_server_auto_update_setting_defaults_on_and_persists(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "SETTINGS_PATH", tmp_path / "settings.json")
+    client = app.test_client()
+
+    environ = {"REMOTE_ADDR": "192.0.2.222"}
+    assert client.get("/api/settings", environ_base=environ).get_json() == {"auto_update_ytdlp": True}
+    saved = client.post("/api/settings", json={"auto_update_ytdlp": False}, environ_base=environ)
+
+    assert saved.status_code == 200
+    assert client.get("/api/settings", environ_base=environ).get_json() == {"auto_update_ytdlp": False}
+
+
+def test_cache_clear_endpoint_skips_active_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
+    active_file = tmp_path / "active_480p.mp4"
+    removable_file = tmp_path / "old_360p.mp4"
+    active_file.write_bytes(b"active")
+    removable_file.write_bytes(b"cached")
+
+    with player.protect_cache_file(active_file):
+        response = app.test_client().post(
+            "/api/cache/clear",
+            environ_base={"REMOTE_ADDR": "192.0.2.221"},
+        )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "removed_file_count": 1,
+        "cache_size_bytes": len(b"active"),
+        "cache_file_count": 1,
+    }
+    assert active_file.exists()
+    assert not removable_file.exists()
 
 
 def test_status_returns_progress_and_does_not_restart_failed_job(monkeypatch):

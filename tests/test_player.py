@@ -187,6 +187,24 @@ def test_clean_cache_preserves_active_cache_files(tmp_path, monkeypatch):
         assert not stale_file.exists()
 
 
+def test_clear_cache_preserves_preparing_files_and_removes_other_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
+    active_file = tmp_path / "active_480p.mp4"
+    partial_file = tmp_path / "active_480p.part"
+    removable_file = tmp_path / "old_360p.mp4"
+    active_file.write_bytes(b"stream")
+    partial_file.write_bytes(b"partial")
+    removable_file.write_bytes(b"cache")
+
+    with player.protect_cache_file(active_file):
+        assert player.clear_cache() == 1
+        assert active_file.exists()
+        assert partial_file.exists()
+        assert not removable_file.exists()
+
+    assert player.cache_stats() == (len(b"stream") + len(b"partial"), 2)
+
+
 def test_download_video_merges_to_mp4_and_reuses_cached_file(tmp_path, monkeypatch):
     monkeypatch.setattr(player, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(player, "_extract_info", lambda url: {"id": "abc123", "title": "Test"})

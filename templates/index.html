@@ -3,7 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#dc4e37">
   <title>YouTube Viewer</title>
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+  <link rel="icon" href="{{ url_for('static', filename='icons/icon-192.svg') }}" type="image/svg+xml">
   <style>
     :root {
       color-scheme: light;
@@ -133,6 +136,11 @@
     .setting-row input[type="checkbox"] { flex: 0 0 auto; min-height: 0; width: 20px; height: 20px; }
     .settings-actions { display: flex; flex-wrap: wrap; gap: 10px; }
     .privacy-note { color: var(--muted); }
+    .system-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; margin: 0; }
+    .system-grid dt { color: var(--muted); }
+    .system-grid dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+    .system-errors { margin: 8px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+    .system-errors li { margin: 7px 0; }
     .panel-backdrop { position: fixed; z-index: 6; inset: 0 0 0 224px; border: 0; border-radius: 0; background: #0007; }
     .side-panel { position: fixed; z-index: 7; inset: 0 auto 0 224px; box-sizing: border-box; width: min(460px, calc(100vw - 224px)); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--accent) var(--page-pattern); padding: 22px; border-right: 1px solid var(--border); background: var(--surface); box-shadow: 8px 0 30px #0002; transform: translateX(calc(-100% - 8px)); transition: transform .2s ease, left .18s ease; }
     .side-panel::-webkit-scrollbar, main::-webkit-scrollbar { width: 9px; }
@@ -307,6 +315,34 @@
         <h3>Home page</h3>
         <div class="setting-row"><label for="setting-recommendations">Show recommendations</label><input id="setting-recommendations" type="checkbox"></div>
         <div class="setting-row"><label for="setting-feed-search-count">Recent searches for recommendations</label><select id="setting-feed-search-count"><option value="3">3</option><option value="5">5</option><option value="10">10</option></select></div>
+      </section>
+      <section class="settings-section">
+        <h3>System</h3>
+        <div class="setting-row"><label for="setting-auto-update-ytdlp">Auto-update yt-dlp</label><input id="setting-auto-update-ytdlp" type="checkbox" checked></div>
+        <dl class="system-grid">
+          <dt>yt-dlp</dt><dd id="system-ytdlp">Checking</dd>
+          <dt>ffmpeg</dt><dd id="system-ffmpeg">Checking</dd>
+          <dt>Deno</dt><dd id="system-deno">Checking</dd>
+          <dt>aria2c</dt><dd id="system-aria2c">Checking</dd>
+        </dl>
+        <div id="system-local-details">
+          <dl class="system-grid">
+            <dt>Free disk space</dt><dd id="system-disk-free">Unavailable</dd>
+            <dt>Uptime</dt><dd id="system-uptime">Unavailable</dd>
+          </dl>
+          <h4>Recent errors</h4>
+          <ol id="system-errors" class="system-errors"></ol>
+        </div>
+        <p id="system-detail-note" class="privacy-note" hidden>Detailed system information is available from localhost only.</p>
+      </section>
+      <section class="settings-section">
+        <h3>Cache</h3>
+        <dl class="system-grid">
+          <dt>Size</dt><dd id="cache-size">Unavailable</dd>
+          <dt>Files</dt><dd id="cache-file-count">Unavailable</dd>
+        </dl>
+        <div class="settings-actions"><button id="clear-cache" type="button">Clear cache</button></div>
+        <p id="cache-message" aria-live="polite" hidden></p>
       </section>
       <section class="settings-section">
         <h3>Privacy</h3>
@@ -668,6 +704,108 @@
       writeHistory(readHistory());
       applySettings();
       if (!initialWatching) qualitySelect.value = settings.quality;
+    }
+
+    function formatBytes(value) {
+      if (!Number.isFinite(value)) return 'Unavailable';
+      if (value < 1024) return `${value} B`;
+      const units = ['KB', 'MB', 'GB', 'TB'];
+      let amount = value;
+      let unit = -1;
+      do {
+        amount /= 1024;
+        unit += 1;
+      } while (amount >= 1024 && unit < units.length - 1);
+      return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[unit]}`;
+    }
+
+    async function loadServerSettings() {
+      try {
+        const response = await fetch('/api/settings');
+        if (!response.ok) throw new Error('Settings unavailable');
+        const values = await response.json();
+        document.getElementById('setting-auto-update-ytdlp').checked = values.auto_update_ytdlp !== false;
+      } catch (_) {
+        document.getElementById('setting-auto-update-ytdlp').checked = true;
+      }
+    }
+
+    async function refreshSystemInfo() {
+      try {
+        const response = await fetch('/health');
+        if (!response.ok) throw new Error('System information unavailable');
+        const info = await response.json();
+        document.getElementById('system-ytdlp').textContent = info.yt_dlp?.version || 'Unavailable';
+        document.getElementById('system-ffmpeg').textContent = info.ffmpeg || 'Unavailable';
+        document.getElementById('system-deno').textContent = info.deno || 'Unavailable';
+        document.getElementById('system-aria2c').textContent = info.aria2c || 'Unavailable';
+        const hasDetails = Number.isFinite(info.disk_free_bytes);
+        document.getElementById('system-local-details').hidden = !hasDetails;
+        document.getElementById('system-detail-note').hidden = hasDetails;
+        if (!hasDetails) return;
+        document.getElementById('system-disk-free').textContent = formatBytes(info.disk_free_bytes);
+        const seconds = info.uptime_seconds || 0;
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        document.getElementById('system-uptime').textContent = `${hours}h ${minutes}m`;
+        document.getElementById('cache-size').textContent = formatBytes(info.cache_size_bytes);
+        document.getElementById('cache-file-count').textContent = String(info.cache_file_count ?? 0);
+        const errors = document.getElementById('system-errors');
+        errors.replaceChildren();
+        for (const entry of info.errors || []) {
+          const item = document.createElement('li');
+          const timestamp = new Date(entry.timestamp).toLocaleString();
+          item.textContent = `${timestamp}: ${entry.message}`;
+          errors.append(item);
+        }
+        if (!errors.children.length) {
+          const item = document.createElement('li');
+          item.textContent = 'No recent errors.';
+          errors.append(item);
+        }
+      } catch (_) {
+        document.getElementById('system-ytdlp').textContent = 'Unavailable';
+      }
+    }
+
+    async function saveAutoUpdateSetting(enabled) {
+      const control = document.getElementById('setting-auto-update-ytdlp');
+      control.disabled = true;
+      try {
+        const response = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ auto_update_ytdlp: enabled })
+        });
+        if (!response.ok) throw new Error('Could not save setting');
+        showSettingsMessage('Server setting saved.');
+      } catch (_) {
+        control.checked = !enabled;
+        showSettingsMessage('Could not save the server setting.', true);
+      } finally {
+        control.disabled = false;
+      }
+    }
+
+    async function clearCacheFromSettings() {
+      if (!window.confirm('Clear cached files that are not currently being prepared or served?')) return;
+      const button = document.getElementById('clear-cache');
+      const message = document.getElementById('cache-message');
+      button.disabled = true;
+      message.hidden = false;
+      message.textContent = 'Clearing cache...';
+      try {
+        const response = await fetch('/api/cache/clear', { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Could not clear cache.');
+        document.getElementById('cache-size').textContent = formatBytes(result.cache_size_bytes);
+        document.getElementById('cache-file-count').textContent = String(result.cache_file_count);
+        message.textContent = `Removed ${result.removed_file_count} files. ${result.cache_file_count} files remain.`;
+      } catch (_) {
+        message.textContent = 'Could not clear cache. Try again shortly.';
+      } finally {
+        button.disabled = false;
+      }
     }
 
     function setActiveNavigation(view) {
@@ -1727,6 +1865,14 @@
     document.getElementById('setting-batch-size').addEventListener('change', (event) => saveSettings({ batchSize: Number(event.target.value) }));
     document.getElementById('setting-recommendations').addEventListener('change', (event) => saveSettings({ recommendations: event.target.checked }));
     document.getElementById('setting-feed-search-count').addEventListener('change', (event) => saveSettings({ feedSearchCount: Number(event.target.value) }));
+    document.getElementById('setting-auto-update-ytdlp').addEventListener('change', (event) => saveAutoUpdateSetting(event.target.checked));
+    document.getElementById('clear-cache').addEventListener('click', clearCacheFromSettings);
+    for (const item of document.querySelectorAll('.nav-item[data-view="settings"]')) {
+      item.addEventListener('click', () => {
+        loadServerSettings();
+        refreshSystemInfo();
+      });
+    }
     document.getElementById('reset-settings').addEventListener('click', () => {
       settings = normalizeSettings();
       historyPaused = settings.pauseHistory;
@@ -1816,6 +1962,9 @@
     });
 
     loadSettings();
+    loadServerSettings();
+    refreshSystemInfo();
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     const sidebarCollapsed = storage.get(SIDEBAR_KEY, false) === true;
     document.getElementById('sidebar').classList.toggle('collapsed', sidebarCollapsed);
     document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed);

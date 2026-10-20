@@ -311,6 +311,13 @@ def cache_file_is_active(path):
         return _active_cache_paths.get(cache_file, 0) > 0 or _is_preparing_path(cache_file)
 
 
+def _cache_path_is_protected(path):
+    return any(
+        active_path == path or path.name.startswith(active_path.stem)
+        for active_path in (*_active_cache_paths, *_preparing_cache_paths)
+    )
+
+
 def ffmpeg_path():
     return shutil.which("ffmpeg")
 
@@ -328,14 +335,44 @@ def clean_cache(now=None):
     removed = 0
     for path in CACHE_DIR.iterdir():
         with _cache_activity_lock:
-            if (
-                any(active_path == path or path.name.startswith(active_path.stem) for active_path in _active_cache_paths)
-                or not path.is_file()
-            ):
+            if _cache_path_is_protected(path) or not path.is_file():
                 continue
             if path.stat().st_mtime < cutoff:
                 path.unlink()
                 removed += 1
+    return removed
+
+
+def cache_stats():
+    """Return the total cache bytes and number of files without exposing paths."""
+    if not CACHE_DIR.exists():
+        return 0, 0
+    total_bytes = 0
+    file_count = 0
+    for path in CACHE_DIR.rglob("*"):
+        try:
+            if path.is_file():
+                total_bytes += path.stat().st_size
+                file_count += 1
+        except OSError:
+            continue
+    return total_bytes, file_count
+
+
+def clear_cache():
+    """Delete cache files except files currently being prepared or served."""
+    if not CACHE_DIR.exists():
+        return 0
+    removed = 0
+    for path in CACHE_DIR.rglob("*"):
+        with _cache_activity_lock:
+            if _cache_path_is_protected(path) or not path.is_file():
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            removed += 1
     return removed
 
 

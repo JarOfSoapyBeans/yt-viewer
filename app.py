@@ -1,14 +1,25 @@
 """Flask web interface for preparing and playing cached YouTube videos."""
 
 import hashlib
+import ipaddress
+import json
 import logging
 import re
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from collections import defaultdict, deque
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version as package_version
+from pathlib import Path
+from urllib.request import urlopen
 
 from flask import Flask, jsonify, render_template, request, send_file, url_for
+from packaging.version import InvalidVersion, Version
 from waitress import serve
+import yt_dlp
 
 from player import (
     PlayerError,
@@ -17,6 +28,8 @@ from player import (
     cached_video_info,
     cache_file_is_active,
     cache_path,
+    cache_stats,
+    clear_cache,
     clean_cache,
     download_video,
     estimated_size_label,
@@ -35,6 +48,49 @@ from player import (
 app = Flask(__name__)
 app.config["DEBUG"] = False
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+SETTINGS_PATH = Path(__file__).with_name("settings.json")
+_settings_lock = threading.Lock()
+_update_thread_lock = threading.Lock()
+_update_thread_started = False
+_started_at = time.monotonic()
+
+
+class RecentErrors:
+    def __init__(self, capacity=5):
+        self._entries = deque(maxlen=capacity)
+        self._lock = threading.Lock()
+
+    def add(self, message, timestamp=None):
+        safe_message = str(message)
+        safe_message = re.sub(r"(?i)\b(cookie|set-cookie)(\s*[:=]\s*)[^\r\n]*", r"\1\2[redacted]", safe_message)
+        safe_message = re.sub(r"(?i)\b(authorization|password|token|username|user)(\s*[:=]\s*)[^\s,;]+", r"\1\2[redacted]", safe_message)
+        safe_message = re.sub(r"https?://\S+", "[url]", safe_message)
+        safe_message = re.sub(r"(?<![\w])/(?:[^\s/]+/)*[^\s/]+", "[path]", safe_message)
+        safe_message = re.sub(r"\b[A-Za-z]:\\[^\s]+", "[path]", safe_message)
+        entry = {
+            "timestamp": timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "message": safe_message[:500],
+        }
+        with self._lock:
+            self._entries.append(entry)
+
+    def snapshot(self):
+        with self._lock:
+            return [dict(entry) for entry in self._entries]
+
+
+_recent_errors = RecentErrors()
+
+
+class _RecentErrorHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            _recent_errors.add(record.getMessage())
+        except Exception:
+            pass
+
+
+app.logger.addHandler(_RecentErrorHandler(level=logging.ERROR))
 
 _jobs = {}
 _jobs_lock = threading.Lock()
@@ -50,6 +106,94 @@ FFMPEG_WARNING = None if FFMPEG_AVAILABLE else (
 )
 if FFMPEG_WARNING:
     app.logger.error(FFMPEG_WARNING)
+
+
+def _read_server_settings():
+    with _settings_lock:
+        try:
+            values = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            values = {}
+        if not isinstance(values, dict):
+            values = {}
+        return {"auto_update_ytdlp": values.get("auto_update_ytdlp") is not False}
+
+
+def _write_server_settings(values):
+    with _settings_lock:
+        temporary_path = SETTINGS_PATH.with_suffix(".tmp")
+        temporary_path.write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
+        temporary_path.replace(SETTINGS_PATH)
+
+
+def _is_newer_version(installed, latest):
+    try:
+        return Version(str(latest)) > Version(str(installed))
+    except InvalidVersion:
+        return False
+
+
+def _check_for_ytdlp_update():
+    try:
+        with urlopen("https://pypi.org/pypi/yt-dlp/json", timeout=5) as response:
+            latest = json.load(response)["info"]["version"]
+        installed = yt_dlp.version.__version__
+        if not _is_newer_version(installed, latest):
+            app.logger.info("yt-dlp is up to date (%s)", installed)
+            return
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        app.logger.info("Updated yt-dlp from %s to %s", installed, latest)
+    except Exception as error:
+        app.logger.warning("yt-dlp auto-update skipped: %s", error.__class__.__name__)
+
+
+def _start_ytdlp_update_if_enabled():
+    global _update_thread_started
+    if not _read_server_settings()["auto_update_ytdlp"]:
+        app.logger.info("yt-dlp auto-update is disabled")
+        return
+    with _update_thread_lock:
+        if _update_thread_started:
+            return
+        _update_thread_started = True
+    threading.Thread(target=_check_for_ytdlp_update, daemon=True, name="yt-dlp-update").start()
+
+
+def _available_tool(command):
+    return bool(shutil.which(command))
+
+
+def _installed_ytdlp_version():
+    try:
+        return package_version("yt-dlp")
+    except PackageNotFoundError:
+        return yt_dlp.version.__version__
+
+
+def _health_payload(full_details):
+    payload = {
+        "yt_dlp": {"version": _installed_ytdlp_version()},
+        "ffmpeg": "ok" if ffmpeg_path() else "missing",
+        "deno": "ok" if _available_tool("deno") else "missing",
+        "aria2c": "ok" if _available_tool("aria2c") else "missing",
+    }
+    if full_details:
+        usage = shutil.disk_usage(Path(__file__).resolve().parent)
+        cache_bytes, cache_file_count = cache_stats()
+        payload.update(
+            disk_free_bytes=usage.free,
+            cache_size_bytes=cache_bytes,
+            cache_file_count=cache_file_count,
+            uptime_seconds=max(0, int(time.monotonic() - _started_at)),
+            errors=_recent_errors.snapshot(),
+        )
+    return payload
 
 
 @app.before_request
@@ -189,6 +333,48 @@ def _start_job(video_url, quality, retry=False):
 @app.get("/")
 def index():
     return _render_index()
+
+
+@app.get("/health")
+def health():
+    remote_address = request.remote_addr or ""
+    try:
+        is_local = ipaddress.ip_address(remote_address).is_loopback
+    except ValueError:
+        is_local = False
+    full_details = not request.headers.get("CF-Connecting-IP") and is_local
+    return jsonify(_health_payload(full_details))
+
+
+@app.get("/api/settings")
+def get_settings():
+    return jsonify(_read_server_settings())
+
+
+@app.post("/api/settings")
+def update_settings():
+    values = request.get_json(silent=True)
+    if not isinstance(values, dict) or not isinstance(values.get("auto_update_ytdlp"), bool):
+        return jsonify(error="auto_update_ytdlp must be a boolean."), 400
+    settings = {"auto_update_ytdlp": values["auto_update_ytdlp"]}
+    try:
+        _write_server_settings(settings)
+    except OSError:
+        app.logger.exception("Could not persist server settings")
+        return jsonify(error="Could not save settings."), 500
+    return jsonify(settings)
+
+
+@app.post("/api/cache/clear")
+def clear_cached_files():
+    removed = clear_cache()
+    size_bytes, file_count = cache_stats()
+    return jsonify(removed_file_count=removed, cache_size_bytes=size_bytes, cache_file_count=file_count)
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    return send_file(Path(__file__).with_name("service-worker.js"), mimetype="application/javascript")
 
 
 @app.post("/watch")
@@ -418,6 +604,7 @@ def download():
 
 
 def run():
+    _start_ytdlp_update_if_enabled()
     serve(app, host="127.0.0.1", port=5000, threads=8)
 
 
